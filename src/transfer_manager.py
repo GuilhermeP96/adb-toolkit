@@ -223,6 +223,15 @@ class TransferManager(ADBManagerBase):
         self._child_backup_mgr = backup_mgr
         self._child_restore_mgr = restore_mgr
 
+        # Propagate device-confirmation callbacks to child managers
+        if self._confirmation_cb:
+            backup_mgr.set_confirmation_callback(
+                self._confirmation_cb, self._confirmation_dismiss_cb,
+            )
+            restore_mgr.set_confirmation_callback(
+                self._confirmation_cb, self._confirmation_dismiss_cb,
+            )
+
         overall_success = True
         steps_done = 0
         total_steps = sum([

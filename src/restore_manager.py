@@ -66,14 +66,21 @@ class RestoreManager(ADBManagerBase):
 
         self._emit(BackupProgress(
             phase="full_restore",
-            current_item="Restoring full backup (confirm on device)...",
+            current_item="Restaurando backup completo (confirme no dispositivo)...",
             percent=10,
         ))
 
         log.info("Restoring full backup %s to %s", backup_id, serial)
-        result = self.adb.run(
+        result = self._run_with_confirmation(
             ["restore", str(backup_file)],
-            serial=serial,
+            serial,
+            title="Restauração Completa",
+            message=(
+                "O dispositivo está exibindo uma tela de confirmação.\n\n"
+                "📱 Toque em 'RESTAURAR MEUS DADOS' no seu dispositivo "
+                "para continuar.\n\n"
+                "A operação aguardará até você confirmar."
+            ),
             timeout=7200,
         )
 
@@ -231,10 +238,19 @@ class RestoreManager(ADBManagerBase):
                 self._emit(BackupProgress(
                     phase="restoring_app_data",
                     sub_phase="app_data",
-                    current_item="Restoring app data...",
+                    current_item="Restaurando dados dos apps...",
                     percent=90,
                 ))
-                self.adb.run(["restore", str(data_file)], serial=serial, timeout=3600)
+                self._run_with_confirmation(
+                    ["restore", str(data_file)],
+                    serial,
+                    title="Restauração de Dados",
+                    message=(
+                        "📱 Confirme a restauração de dados no dispositivo.\n\n"
+                        "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                    ),
+                    timeout=3600,
+                )
 
         self._emit(BackupProgress(phase="complete", percent=100))
         log.info("Restored %d/%d apps", success, total)
@@ -284,8 +300,15 @@ class RestoreManager(ADBManagerBase):
                     current_item="ADB restore de contatos...",
                     percent=50,
                 ))
-                result = self.adb.run(
-                    ["restore", str(contacts_ab)], serial=serial, timeout=120,
+                result = self._run_with_confirmation(
+                    ["restore", str(contacts_ab)],
+                    serial,
+                    title="Restauração de Contatos",
+                    message=(
+                        "📱 Confirme a restauração no dispositivo para recuperar os contatos.\n\n"
+                        "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                    ),
+                    timeout=120,
                 )
                 if result.returncode == 0:
                     success = True
@@ -402,8 +425,15 @@ class RestoreManager(ADBManagerBase):
                     current_item="ADB restore de SMS...",
                     percent=85,
                 ))
-                result = self.adb.run(
-                    ["restore", str(sms_ab)], serial=serial, timeout=120,
+                result = self._run_with_confirmation(
+                    ["restore", str(sms_ab)],
+                    serial,
+                    title="Restauração de SMS",
+                    message=(
+                        "📱 Confirme a restauração no dispositivo para recuperar as mensagens.\n\n"
+                        "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                    ),
+                    timeout=120,
                 )
                 if result.returncode == 0:
                     success = True
@@ -512,9 +542,15 @@ class RestoreManager(ADBManagerBase):
                 # 3. Restore app data (.ab files — skip empty ones)
                 for ab_file in app_dir.glob("*_data.ab"):
                     if ab_file.stat().st_size > 24:
-                        self.adb.run(
+                        self._run_with_confirmation(
                             ["restore", str(ab_file)],
-                            serial=serial,
+                            serial,
+                            title="Restauração de Dados do App",
+                            message=(
+                                f"📱 Confirme a restauração de dados do app no dispositivo.\n\n"
+                                f"App: {app_key}\n"
+                                f"Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                            ),
                             timeout=300,
                         )
 
@@ -652,9 +688,15 @@ class RestoreManager(ADBManagerBase):
             ab_file = pkg_dir / f"{pkg}_data.ab"
             if ab_file.exists() and ab_file.stat().st_size > 24:
                 try:
-                    self.adb.run(
+                    self._run_with_confirmation(
                         ["restore", str(ab_file)],
-                        serial=serial,
+                        serial,
+                        title="Restauração de Dados do App",
+                        message=(
+                            f"📱 Confirme a restauração de dados no dispositivo.\n\n"
+                            f"App: {pkg}\n"
+                            f"Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                        ),
                         timeout=120,
                     )
                 except Exception as exc:

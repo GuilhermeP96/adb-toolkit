@@ -84,6 +84,14 @@ class ADBToolkitApp(ctk.CTk):
         self.toolbox_mgr = ToolboxManager(adb)
         self.driver_mgr = DriverManager(adb.base_dir)
 
+        # Register device-confirmation overlay callbacks on all managers
+        # that may trigger adb backup / adb restore commands
+        for mgr in (self.backup_mgr, self.restore_mgr, self.transfer_mgr):
+            mgr.set_confirmation_callback(
+                self._show_device_confirmation,
+                self._dismiss_device_confirmation,
+            )
+
         # Cross-platform device manager
         self.device_mgr = DeviceManager()
         self.device_mgr.register(ADBAdapter(adb))
@@ -103,6 +111,7 @@ class ADBToolkitApp(ctk.CTk):
         self._ready = False  # True after UI fully built
         self._driver_install_running = False
         self._ui_locked = False
+        self._confirm_dlg = None  # Device confirmation overlay
 
         # Window setup
         self.title("ADB Toolkit — Backup · Recovery · Transfer")
@@ -2717,6 +2726,109 @@ class ADBToolkitApp(ctk.CTk):
             pass
 
     # ==================================================================
+    # Device confirmation overlay
+    # ==================================================================
+    def _show_device_confirmation(self, title: str, message: str):
+        """Show a prominent overlay telling the user to confirm on device.
+
+        Called from worker threads — schedules UI work on the main thread.
+        """
+        def _build():
+            if self._closing:
+                return
+            # Dismiss any existing overlay first
+            self._dismiss_device_confirmation_ui()
+
+            dlg = ctk.CTkToplevel(self)
+            dlg.title(title)
+            dlg.geometry("520x340")
+            dlg.resizable(False, False)
+            dlg.transient(self)
+            dlg.attributes("-topmost", True)
+            dlg.configure(fg_color=COLORS["bg"])
+            dlg.protocol("WM_DELETE_WINDOW", lambda: None)  # Prevent closing
+
+            # Pulsing phone icon
+            self._confirm_icon_lbl = ctk.CTkLabel(
+                dlg, text="📱", font=ctk.CTkFont(size=64),
+            )
+            self._confirm_icon_lbl.pack(pady=(24, 8))
+
+            # Title
+            ctk.CTkLabel(
+                dlg, text=title,
+                font=ctk.CTkFont(size=20, weight="bold"),
+                text_color=COLORS["warning"],
+            ).pack(pady=(0, 8))
+
+            # Message
+            ctk.CTkLabel(
+                dlg, text=message,
+                font=ctk.CTkFont(size=13),
+                wraplength=460,
+                justify="center",
+            ).pack(padx=20, pady=(0, 12))
+
+            # Animated waiting indicator
+            self._confirm_dots_lbl = ctk.CTkLabel(
+                dlg, text="⏳ Aguardando confirmação no dispositivo...",
+                font=ctk.CTkFont(size=12),
+                text_color=COLORS["text_dim"],
+            )
+            self._confirm_dots_lbl.pack(pady=(4, 8))
+
+            # Pulsing progress bar (indeterminate feel)
+            self._confirm_pulse_bar = ctk.CTkProgressBar(
+                dlg, width=400, height=6,
+                progress_color=COLORS["warning"],
+            )
+            self._confirm_pulse_bar.pack(pady=(0, 16))
+            self._confirm_pulse_bar.set(0)
+
+            self._confirm_dlg = dlg
+            self._confirm_pulse_val = 0.0
+            self._confirm_pulse_dir = 1
+            self._animate_confirmation_pulse()
+
+            # Also beep to attract attention
+            try:
+                self.bell()
+            except Exception:
+                pass
+
+        self._safe_after(0, _build)
+
+    def _animate_confirmation_pulse(self):
+        """Animate the progress bar back and forth while waiting."""
+        if self._closing:
+            return
+        if not hasattr(self, "_confirm_dlg") or self._confirm_dlg is None:
+            return
+        try:
+            self._confirm_pulse_val += 0.02 * self._confirm_pulse_dir
+            if self._confirm_pulse_val >= 1.0:
+                self._confirm_pulse_dir = -1
+            elif self._confirm_pulse_val <= 0.0:
+                self._confirm_pulse_dir = 1
+            self._confirm_pulse_bar.set(self._confirm_pulse_val)
+            self._confirm_dlg.after(50, self._animate_confirmation_pulse)
+        except Exception:
+            pass
+
+    def _dismiss_device_confirmation(self):
+        """Hide the device confirmation overlay. Called from worker threads."""
+        self._safe_after(0, self._dismiss_device_confirmation_ui)
+
+    def _dismiss_device_confirmation_ui(self):
+        """Destroy the overlay on the main thread."""
+        if hasattr(self, "_confirm_dlg") and self._confirm_dlg is not None:
+            try:
+                self._confirm_dlg.destroy()
+            except Exception:
+                pass
+            self._confirm_dlg = None
+
+    # ==================================================================
     # Device management
     # ==================================================================
     def _start_device_monitor(self):
@@ -4837,6 +4949,7 @@ class ADBToolkitApp(ctk.CTk):
             return
         self._closing = True
         log.info("Shutting down...")
+        self._dismiss_device_confirmation_ui()
         try:
             self.adb.stop_device_monitor()
         except Exception:

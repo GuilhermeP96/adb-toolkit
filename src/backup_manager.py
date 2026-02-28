@@ -194,12 +194,22 @@ class BackupManager(ADBManagerBase):
         log.info("Starting full ADB backup for %s", serial)
         self._emit(BackupProgress(
             phase="full_backup",
-            current_item="Waiting for confirmation on device...",
+            current_item="Aguardando confirmação no dispositivo...",
             percent=5,
         ))
 
         # Full backup requires user confirmation on device
-        result = self.adb.run(args, serial=serial, timeout=7200)
+        result = self._run_with_confirmation(
+            args, serial,
+            title="Backup Completo",
+            message=(
+                "O dispositivo está exibindo uma tela de confirmação.\n\n"
+                "📱 Toque em 'FAZER BACKUP DOS MEUS DADOS' no seu dispositivo "
+                "para continuar.\n\n"
+                "A operação aguardará até você confirmar."
+            ),
+            timeout=7200,
+        )
 
         if self._cancel_flag.is_set():
             shutil.rmtree(folder, ignore_errors=True)
@@ -367,7 +377,15 @@ class BackupManager(ADBManagerBase):
             data_args = ["backup", "-noapk", "-noshared"]
             data_args.extend(backed_up)
             data_args.extend(["-f", str(data_backup)])
-            self.adb.run(data_args, serial=serial, timeout=3600)
+            self._run_with_confirmation(
+                data_args, serial,
+                title="Backup de Dados dos Apps",
+                message=(
+                    "📱 Confirme o backup de dados dos aplicativos no dispositivo.\n\n"
+                    "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                ),
+                timeout=3600,
+            )
 
         duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
@@ -476,9 +494,15 @@ class BackupManager(ADBManagerBase):
                 phase="contacts", current_item="ADB backup de contatos..."
             ))
             contacts_ab = folder / "contacts.ab"
-            self.adb.run(
+            self._run_with_confirmation(
                 ["backup", "-f", str(contacts_ab), "com.android.providers.contacts"],
-                serial=serial, timeout=120,
+                serial,
+                title="Backup de Contatos",
+                message=(
+                    "📱 Confirme o backup no dispositivo para salvar os contatos.\n\n"
+                    "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                ),
+                timeout=120,
             )
             # Check if the backup actually has content (>24 bytes = non-empty)
             if contacts_ab.exists() and contacts_ab.stat().st_size > 24:
@@ -626,9 +650,15 @@ class BackupManager(ADBManagerBase):
                 phase="sms", current_item="ADB backup de SMS..."
             ))
             sms_ab = folder / "sms.ab"
-            self.adb.run(
+            self._run_with_confirmation(
                 ["backup", "-f", str(sms_ab), "com.android.providers.telephony"],
-                serial=serial, timeout=120,
+                serial,
+                title="Backup de SMS",
+                message=(
+                    "📱 Confirme o backup no dispositivo para salvar as mensagens.\n\n"
+                    "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                ),
+                timeout=120,
             )
             if sms_ab.exists() and sms_ab.stat().st_size > 24:
                 file_count += 1
@@ -784,9 +814,15 @@ class BackupManager(ADBManagerBase):
             for pkg in packages:
                 try:
                     data_file = app_folder / f"{pkg}_data.ab"
-                    self.adb.run(
+                    self._run_with_confirmation(
                         ["backup", "-f", str(data_file), "-noapk", pkg],
-                        serial=serial,
+                        serial,
+                        title="Backup de Dados do App",
+                        message=(
+                            f"📱 Confirme o backup de dados do app no dispositivo.\n\n"
+                            f"App: {pkg}\n"
+                            f"Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                        ),
                         timeout=300,
                     )
                 except Exception as exc:
@@ -931,9 +967,15 @@ class BackupManager(ADBManagerBase):
             # 3. ADB backup (app internal data — may require confirmation)
             try:
                 data_file = pkg_folder / f"{pkg}_data.ab"
-                self.adb.run(
+                self._run_with_confirmation(
                     ["backup", "-f", str(data_file), "-noapk", pkg],
-                    serial=serial,
+                    serial,
+                    title="Backup de Dados do App",
+                    message=(
+                        f"📱 Confirme o backup de dados do app no dispositivo.\n\n"
+                        f"App: {pkg}\n"
+                        f"Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                    ),
                     timeout=60,
                 )
             except Exception as exc:

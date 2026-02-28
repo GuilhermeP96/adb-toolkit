@@ -94,12 +94,34 @@ class ADBManagerBase:
         self.adb = adb
         self._cancel_flag = threading.Event()
         self._progress_cb: Optional[Callable[[OperationProgress], None]] = None
+        self._confirmation_cb: Optional[Callable[[str, str], None]] = None
+        self._confirmation_dismiss_cb: Optional[Callable[[], None]] = None
         self._start_time: Optional[float] = None
         self._errors: List[str] = []
 
     # -- progress / cancel API ------------------------------------------------
     def set_progress_callback(self, cb: Callable[[OperationProgress], None]):
         self._progress_cb = cb
+
+    def set_confirmation_callback(
+        self,
+        show_cb: Callable[[str, str], None],
+        dismiss_cb: Callable[[], None],
+    ):
+        """Register callbacks for device-side confirmation prompts.
+
+        Parameters
+        ----------
+        show_cb:
+            ``show_cb(title, message)`` — called when the device is about
+            to display a confirmation banner that the user must accept.
+            Implementers should show a prominent, non-blocking notification.
+        dismiss_cb:
+            ``dismiss_cb()`` — called after the device-side action completes
+            (or is cancelled) so the notification can be hidden.
+        """
+        self._confirmation_cb = show_cb
+        self._confirmation_dismiss_cb = dismiss_cb
 
     def cancel(self):
         self._cancel_flag.set()
@@ -112,6 +134,49 @@ class ADBManagerBase:
         self._cancel_flag.clear()
         self._start_time = time.time()
         self._errors.clear()
+
+    # -- device confirmation helpers ------------------------------------------
+    def _request_device_confirmation(self, title: str, message: str) -> None:
+        """Notify the UI that the device requires user confirmation.
+
+        This is non-blocking — it only triggers the UI overlay.
+        """
+        log.info("Device confirmation requested: %s — %s", title, message)
+        if self._confirmation_cb:
+            try:
+                self._confirmation_cb(title, message)
+            except Exception:
+                pass
+
+    def _dismiss_device_confirmation(self) -> None:
+        """Hide the device-confirmation overlay in the UI."""
+        if self._confirmation_dismiss_cb:
+            try:
+                self._confirmation_dismiss_cb()
+            except Exception:
+                pass
+
+    def _run_with_confirmation(
+        self,
+        args: List[str],
+        serial: str,
+        *,
+        title: str,
+        message: str,
+        timeout: int = 7200,
+    ):
+        """Run an ADB command that requires device-side user confirmation.
+
+        Shows the confirmation overlay before executing, waits for the
+        command to finish (up to *timeout* seconds), then dismisses the
+        overlay.  Returns the ``CompletedProcess`` result.
+        """
+        self._request_device_confirmation(title, message)
+        try:
+            result = self.adb.run(args, serial=serial, timeout=timeout)
+        finally:
+            self._dismiss_device_confirmation()
+        return result
 
     def _emit(self, progress: OperationProgress):
         """Send *progress* to the registered callback.
