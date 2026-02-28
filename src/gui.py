@@ -72,6 +72,7 @@ class ADBToolkitApp(ctk.CTk):
         self._closing = False
         self._ready = False  # True after UI fully built
         self._driver_install_running = False
+        self._ui_locked = False
 
         # Window setup
         self.title("ADB Toolkit — Backup · Recovery · Transfer")
@@ -136,10 +137,11 @@ class ADBToolkitApp(ctk.CTk):
         )
         self.lbl_connection.pack(side="left", padx=20)
 
-        ctk.CTkButton(
+        self.btn_refresh = ctk.CTkButton(
             frame, text="Atualizar", width=100,
             command=self._refresh_devices,
-        ).pack(side="right", padx=8, pady=8)
+        )
+        self.btn_refresh.pack(side="right", padx=8, pady=8)
 
     # ------------------------------------------------------------------
     # Status bar (footer) with acceleration toggles
@@ -158,7 +160,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # Right — version
         self.lbl_version = ctk.CTkLabel(
-            frame, text="v1.0.0", anchor="e",
+            frame, text="v1.2.0", anchor="e",
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_dim"],
         )
@@ -987,6 +989,31 @@ class ADBToolkitApp(ctk.CTk):
                 cats_inner, text=label, variable=var,
             ).grid(row=i // 4, column=i % 4, sticky="w", padx=8, pady=4)
 
+        # --- Filter toggles (ignore cache / thumbnails) ----------------
+        filter_frame = ctk.CTkFrame(cats_frame, fg_color="transparent")
+        filter_frame.pack(fill="x", padx=12, pady=(4, 8))
+
+        ctk.CTkLabel(
+            filter_frame, text="Filtros:",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", padx=(0, 8))
+
+        self.var_ignore_cache = ctk.BooleanVar(
+            value=self.config.get("transfer.ignore_cache", True),
+        )
+        ctk.CTkCheckBox(
+            filter_frame, text="🗑️ Ignorar Caches",
+            variable=self.var_ignore_cache,
+        ).pack(side="left", padx=8)
+
+        self.var_ignore_thumbnails = ctk.BooleanVar(
+            value=self.config.get("transfer.ignore_thumbnails", True),
+        )
+        ctk.CTkCheckBox(
+            filter_frame, text="🖼️ Ignorar Dumps/Thumbnails",
+            variable=self.var_ignore_thumbnails,
+        ).pack(side="left", padx=8)
+
         # Messaging apps selection for transfer
         msg_transfer_frame = ctk.CTkFrame(transfer_scroll)
         msg_transfer_frame.pack(fill="x", padx=4, pady=4)
@@ -1113,12 +1140,13 @@ class ADBToolkitApp(ctk.CTk):
         )
         self.btn_start_transfer.pack(side="left", padx=8)
 
-        ctk.CTkButton(
+        self.btn_clone_device = ctk.CTkButton(
             btn_frame,
             text="📋 Clonar Dispositivo (Tudo)",
             height=42,
             command=self._clone_device,
-        ).pack(side="left", padx=8)
+        )
+        self.btn_clone_device.pack(side="left", padx=8)
 
         self.btn_cancel_transfer = ctk.CTkButton(
             btn_frame, text="✖ Cancelar",
@@ -1972,6 +2000,58 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     # ==================================================================
+    # UI locking — prevent interaction during long-running operations
+    # ==================================================================
+    def _lock_ui(self):
+        """Disable all action buttons and tab switching during an operation."""
+        self._ui_locked = True
+        # Disable all start / action buttons
+        for btn in self._lockable_buttons():
+            try:
+                btn.configure(state="disabled")
+            except Exception:
+                pass
+        # Disable the tab bar segmented button (prevents tab switching)
+        try:
+            self.tabview._segmented_button.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _unlock_ui(self):
+        """Re-enable all action buttons and tab switching."""
+        self._ui_locked = False
+        for btn in self._lockable_buttons():
+            try:
+                btn.configure(state="normal")
+            except Exception:
+                pass
+        # Re-enable tab bar
+        try:
+            self.tabview._segmented_button.configure(state="normal")
+        except Exception:
+            pass
+        # Cancel buttons back to disabled (no operation running)
+        for cbtn in (
+            self.btn_cancel_backup,
+            self.btn_cancel_restore,
+            self.btn_cancel_transfer,
+        ):
+            try:
+                cbtn.configure(state="disabled")
+            except Exception:
+                pass
+
+    def _lockable_buttons(self):
+        """Return the list of buttons that should be disabled during operations."""
+        return [
+            self.btn_start_backup,
+            self.btn_start_restore,
+            self.btn_start_transfer,
+            self.btn_clone_device,
+            self.btn_refresh,
+        ]
+
+    # ==================================================================
     # Backup operations
     # ==================================================================
     def _start_backup(self):
@@ -1982,7 +2062,7 @@ class ADBToolkitApp(ctk.CTk):
         # Update tree serial before backup
         self.backup_tree.set_serial(serial)
 
-        self.btn_start_backup.configure(state="disabled")
+        self._lock_ui()
         self.btn_cancel_backup.configure(state="normal")
 
         backup_type = self.backup_type_var.get()
@@ -2082,11 +2162,11 @@ class ADBToolkitApp(ctk.CTk):
 
     def _cancel_backup(self):
         self.backup_mgr.cancel()
+        self.transfer_mgr.cancel()
         self._set_status("Backup cancelado")
 
     def _backup_finished(self):
-        self.btn_start_backup.configure(state="normal")
-        self.btn_cancel_backup.configure(state="disabled")
+        self._unlock_ui()
         self._refresh_backup_list()
 
     def _open_backup_folder(self):
@@ -2185,7 +2265,7 @@ class ADBToolkitApp(ctk.CTk):
         ):
             return
 
-        self.btn_start_restore.configure(state="disabled")
+        self._lock_ui()
         self.btn_cancel_restore.configure(state="normal")
 
         def _run():
@@ -2215,10 +2295,11 @@ class ADBToolkitApp(ctk.CTk):
 
     def _cancel_restore(self):
         self.restore_mgr.cancel()
+        self.transfer_mgr.cancel()
+        self._set_status("Restauração cancelada")
 
     def _restore_finished(self):
-        self.btn_start_restore.configure(state="normal")
-        self.btn_cancel_restore.configure(state="disabled")
+        self._unlock_ui()
 
     # ==================================================================
     # Transfer operations
@@ -2310,9 +2391,11 @@ class ADBToolkitApp(ctk.CTk):
             messaging_app_keys=msg_keys,
             unsynced_packages=unsynced_pkgs,
             custom_paths=custom_paths,
+            ignore_cache=self.var_ignore_cache.get(),
+            ignore_thumbnails=self.var_ignore_thumbnails.get(),
         )
 
-        self.btn_start_transfer.configure(state="disabled")
+        self._lock_ui()
         self.btn_cancel_transfer.configure(state="normal")
 
         def _run():
@@ -2438,107 +2521,234 @@ class ADBToolkitApp(ctk.CTk):
         self._set_status(f"{len(detected)} app(s) com dados locais no dispositivo de origem")
 
     def _clone_device(self):
-        """Full clone: copies entire /storage/emulated/0 + apps + contacts + SMS.
+        """Full clone via a single confirmation dialog.
 
-        Requires explicit step-by-step confirmation:
-        1. User selects source device
-        2. User selects destination device
-        3. Detailed confirmation dialog with device names and what will be copied
-        4. Indexing of source storage
-        5. Transfer execution
+        Opens a CTkToplevel where the user picks source and destination
+        devices, reviews storage info and filter toggles, then confirms.
         """
-        src = self._get_serial_from_menu(self.transfer_source_menu.get())
-        tgt = self._get_serial_from_menu(self.transfer_target_menu.get())
-
-        # --- Step 1: Validate source ---
-        if not src:
+        serials = list(self.devices.keys())
+        if len(serials) < 2:
             messagebox.showwarning(
                 "Clonar Dispositivo",
-                "Selecione o dispositivo de ORIGEM no menu acima primeiro.\n\n"
-                "Escolha qual aparelho você quer copiar os dados.",
+                "Conecte pelo menos 2 dispositivos para clonar.",
             )
             return
 
-        # --- Step 2: Validate destination ---
-        if not tgt:
-            messagebox.showwarning(
-                "Clonar Dispositivo",
-                "Selecione o dispositivo de DESTINO no menu acima.\n\n"
-                "Escolha para qual aparelho os dados serão copiados.",
-            )
-            return
+        # Build label→serial mapping
+        dev_labels: Dict[str, str] = {}
+        for s in serials:
+            dev = self.devices[s]
+            dev_labels[dev.short_label() + f"  ({s})"] = s
+        label_list = list(dev_labels.keys())
 
-        if src == tgt:
-            messagebox.showwarning(
-                "Clonar Dispositivo",
-                "Origem e destino devem ser aparelhos DIFERENTES.",
-            )
-            return
-
-        # Get device details for display
-        src_dev = self.devices.get(src)
-        tgt_dev = self.devices.get(tgt)
-        src_name = src_dev.friendly_name() if src_dev else src
-        tgt_name = tgt_dev.friendly_name() if tgt_dev else tgt
-        src_stor = src_dev.storage_summary() if src_dev else ""
-        tgt_stor = tgt_dev.storage_summary() if tgt_dev else ""
-
-        # --- Step 3: Explicit confirmation ---
-        confirm = messagebox.askyesno(
-            "⚠️ Confirmar Clone Completo",
-            f"ATENÇÃO — Verifique os dispositivos com cuidado:\n\n"
-            f"📱 ORIGEM (copiar DE):  {src_name}\n"
-            f"    Serial: {src}\n"
-            f"    Armazenamento: {src_stor or 'N/A'}\n\n"
-            f"📱 DESTINO (copiar PARA):  {tgt_name}\n"
-            f"    Serial: {tgt}\n"
-            f"    Armazenamento: {tgt_stor or 'N/A'}\n\n"
-            f"Será copiado do ORIGEM → DESTINO:\n"
-            f"  • Toda a memória interna (/storage/emulated/0)\n"
-            f"  • Todos os aplicativos instalados\n"
-            f"  • Contatos e SMS\n"
-            f"  • Apps de mensagem detectados\n\n"
-            f"Os dados existentes no DESTINO serão sobrescritos.\n\n"
-            f"Tem certeza que quer continuar?",
+        # Pre-select from dropdowns if already set
+        pre_src = self._get_serial_from_menu(self.transfer_source_menu.get())
+        pre_tgt = self._get_serial_from_menu(self.transfer_target_menu.get())
+        pre_src_lbl = next(
+            (l for l, s in dev_labels.items() if s == pre_src), label_list[0]
         )
-        if not confirm:
-            return
-
-        # Second confirmation (safety net)
-        confirm2 = messagebox.askyesno(
-            "Confirmação Final",
-            f"ÚLTIMA CONFIRMAÇÃO:\n\n"
-            f"  {src_name}  ➡️  {tgt_name}\n\n"
-            f"Todos os dados da memória interna do {src_name} serão\n"
-            f"copiados para o {tgt_name}.\n\n"
-            f"Confirma?",
+        pre_tgt_lbl = next(
+            (l for l, s in dev_labels.items() if s == pre_tgt), (
+                label_list[1] if len(label_list) > 1 else label_list[0]
+            ),
         )
-        if not confirm2:
-            return
 
-        self.btn_start_transfer.configure(state="disabled")
-        self.btn_cancel_transfer.configure(state="normal")
-        self._set_status(f"Indexando memória interna de {src_name}...")
+        # --- Dialog window ---
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("📋 Clonar Dispositivo")
+        dlg.geometry("580x520")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.transient(self)
+        dlg.attributes("-topmost", True)
 
-        def _run():
-            try:
-                self.transfer_mgr.set_progress_callback(self._on_transfer_progress)
-                success = self.transfer_mgr.clone_full_storage(
-                    src, tgt,
-                    storage_path="/storage/emulated/0",
-                )
-                msg = (
-                    "✅ Clone completo concluído com sucesso!"
-                    if success else
-                    "⚠️ Clone concluído com alguns erros. Verifique o log."
-                )
-                self.after(0, lambda: messagebox.showinfo("Clone", msg))
-            except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
-            finally:
-                self.after(0, self._transfer_finished)
+        # Title
+        ctk.CTkLabel(
+            dlg, text="📋 Clone Completo",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(padx=16, pady=(16, 4))
 
-        threading.Thread(target=_run, daemon=True).start()
+        ctk.CTkLabel(
+            dlg,
+            text="Selecione origem e destino, depois confirme.",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_dim"],
+        ).pack(padx=16, pady=(0, 12))
+
+        # ---- Source selector ----
+        src_frame = ctk.CTkFrame(dlg)
+        src_frame.pack(fill="x", padx=16, pady=4)
+
+        ctk.CTkLabel(
+            src_frame, text="📱 ORIGEM (copiar DE):",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 2))
+
+        src_var = ctk.StringVar(value=pre_src_lbl)
+        src_menu = ctk.CTkOptionMenu(src_frame, variable=src_var, values=label_list, width=500)
+        src_menu.pack(padx=12, pady=(0, 4))
+
+        src_info_lbl = ctk.CTkLabel(
+            src_frame, text="", font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"], anchor="w",
+        )
+        src_info_lbl.pack(fill="x", padx=12, pady=(0, 8))
+
+        # ---- Arrow ----
+        ctk.CTkLabel(
+            dlg, text="⬇️  Dados serão copiados para  ⬇️",
+            font=ctk.CTkFont(size=13), text_color=COLORS["warning"],
+        ).pack(pady=4)
+
+        # ---- Target selector ----
+        tgt_frame = ctk.CTkFrame(dlg)
+        tgt_frame.pack(fill="x", padx=16, pady=4)
+
+        ctk.CTkLabel(
+            tgt_frame, text="📱 DESTINO (copiar PARA):",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 2))
+
+        tgt_var = ctk.StringVar(value=pre_tgt_lbl)
+        tgt_menu = ctk.CTkOptionMenu(tgt_frame, variable=tgt_var, values=label_list, width=500)
+        tgt_menu.pack(padx=12, pady=(0, 4))
+
+        tgt_info_lbl = ctk.CTkLabel(
+            tgt_frame, text="", font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"], anchor="w",
+        )
+        tgt_info_lbl.pack(fill="x", padx=12, pady=(0, 8))
+
+        # ---- Update info labels when selection changes ----
+        def _refresh_info(*_args):
+            for var, lbl in ((src_var, src_info_lbl), (tgt_var, tgt_info_lbl)):
+                serial = dev_labels.get(var.get())
+                if serial:
+                    dev = self.devices.get(serial)
+                    if dev:
+                        stor = dev.storage_summary()
+                        lbl.configure(
+                            text=f"Serial: {serial}   |   Armazenamento: {stor or 'N/A'}",
+                        )
+
+        src_var.trace_add("write", _refresh_info)
+        tgt_var.trace_add("write", _refresh_info)
+        _refresh_info()
+
+        # ---- What will be cloned ----
+        scope_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        scope_frame.pack(fill="x", padx=16, pady=(8, 2))
+
+        ctk.CTkLabel(
+            scope_frame,
+            text=(
+                "Será copiado:  Memória interna  •  Aplicativos  •  Contatos  •  SMS  •  Apps de mensagem"
+            ),
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+            wraplength=540,
+        ).pack(anchor="w")
+
+        # ---- Filter toggles ----
+        filter_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        filter_frame.pack(fill="x", padx=16, pady=(4, 8))
+
+        dlg_ignore_cache = ctk.BooleanVar(value=self.var_ignore_cache.get())
+        ctk.CTkCheckBox(
+            filter_frame, text="🗑️ Ignorar Caches",
+            variable=dlg_ignore_cache,
+        ).pack(side="left", padx=8)
+
+        dlg_ignore_thumbs = ctk.BooleanVar(value=self.var_ignore_thumbnails.get())
+        ctk.CTkCheckBox(
+            filter_frame, text="🖼️ Ignorar Dumps/Thumbnails",
+            variable=dlg_ignore_thumbs,
+        ).pack(side="left", padx=8)
+
+        # ---- Buttons ----
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=16, pady=(4, 16))
+
+        def _on_confirm():
+            src_serial = dev_labels.get(src_var.get())
+            tgt_serial = dev_labels.get(tgt_var.get())
+
+            if not src_serial or not tgt_serial:
+                messagebox.showwarning("Clone", "Selecione ambos os dispositivos.", parent=dlg)
+                return
+            if src_serial == tgt_serial:
+                messagebox.showwarning("Clone", "Origem e destino devem ser DIFERENTES.", parent=dlg)
+                return
+
+            src_dev = self.devices.get(src_serial)
+            tgt_dev = self.devices.get(tgt_serial)
+            src_name = src_dev.friendly_name() if src_dev else src_serial
+            tgt_name = tgt_dev.friendly_name() if tgt_dev else tgt_serial
+
+            # Final safety confirmation
+            if not messagebox.askyesno(
+                "⚠️ Confirmação Final",
+                f"{src_name}  ➡️  {tgt_name}\n\n"
+                f"Todos os dados da memória interna do {src_name}\n"
+                f"serão copiados para o {tgt_name}.\n\n"
+                f"Os dados existentes no destino serão sobrescritos.\n\n"
+                f"Confirma?",
+                parent=dlg,
+            ):
+                return
+
+            # Capture settings and close dialog
+            _ic = dlg_ignore_cache.get()
+            _it = dlg_ignore_thumbs.get()
+            # Sync filter toggles back to main UI
+            self.var_ignore_cache.set(_ic)
+            self.var_ignore_thumbnails.set(_it)
+            dlg.destroy()
+
+            # Start the clone
+            self._lock_ui()
+            self.btn_cancel_transfer.configure(state="normal")
+            self._set_status(f"Indexando memória interna de {src_name}...")
+
+            def _run():
+                try:
+                    self.transfer_mgr.set_progress_callback(self._on_transfer_progress)
+                    success = self.transfer_mgr.clone_full_storage(
+                        src_serial, tgt_serial,
+                        storage_path="/storage/emulated/0",
+                        ignore_cache=_ic,
+                        ignore_thumbnails=_it,
+                    )
+                    msg = (
+                        "✅ Clone completo concluído com sucesso!"
+                        if success else
+                        "⚠️ Clone concluído com alguns erros. Verifique o log."
+                    )
+                    self.after(0, lambda: messagebox.showinfo("Clone", msg))
+                except Exception as exc:
+                    self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                finally:
+                    self.after(0, self._transfer_finished)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        ctk.CTkButton(
+            btn_frame,
+            text="✅ Confirmar e Clonar",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            height=42, width=220,
+            command=_on_confirm,
+        ).pack(side="left", padx=8)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Cancelar",
+            fg_color=COLORS["text_dim"],
+            height=42, width=120,
+            command=dlg.destroy,
+        ).pack(side="left", padx=8)
 
     def _on_transfer_progress(self, p: TransferProgress):
         def _update():
@@ -2548,6 +2758,7 @@ class ADBToolkitApp(ctk.CTk):
                 phase_labels = {
                     "initializing": "Inicializando",
                     "indexing": "Indexando arquivos",
+                    "streaming": "Transferindo (streaming)",
                     "backing_up": "Fazendo backup",
                     "restoring": "Restaurando",
                     "verifying": "Verificando integridade",
@@ -2572,10 +2783,12 @@ class ADBToolkitApp(ctk.CTk):
 
     def _cancel_transfer(self):
         self.transfer_mgr.cancel()
+        self.backup_mgr.cancel()
+        self.restore_mgr.cancel()
+        self._set_status("Transferência cancelada")
 
     def _transfer_finished(self):
-        self.btn_start_transfer.configure(state="normal")
-        self.btn_cancel_transfer.configure(state="disabled")
+        self._unlock_ui()
 
     # ==================================================================
     # Driver operations

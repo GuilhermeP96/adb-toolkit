@@ -12,7 +12,7 @@ log = logging.getLogger("adb_toolkit.config")
 DEFAULT_CONFIG = {
     "app": {
         "name": "ADB Toolkit",
-        "version": "1.0.0",
+        "version": "1.2.0",
         "language": "pt-BR",
         "theme": "dark",
         "check_updates": True,
@@ -42,6 +42,8 @@ DEFAULT_CONFIG = {
         "temp_dir": "transfers",
         "cleanup_after": True,
         "verify_after_transfer": True,
+        "ignore_cache": True,
+        "ignore_thumbnails": True,
     },
     "ui": {
         "window_width": 1100,

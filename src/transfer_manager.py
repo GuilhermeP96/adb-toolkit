@@ -11,6 +11,7 @@ Orchestrates backup from source device and restore to target device:
 """
 
 import logging
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,6 +26,35 @@ from .restore_manager import RestoreManager
 from .accelerator import TransferAccelerator, verify_transfer, gpu_available, parallel_checksum
 
 log = logging.getLogger("adb_toolkit.transfer")
+
+
+def _fmt_bytes(size: int) -> str:
+    """Quick human-readable byte formatter."""
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(size) < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} PB"
+
+
+# ---------------------------------------------------------------------------
+# Filter patterns for cache / dump / thumbnail exclusion
+# ---------------------------------------------------------------------------
+_CACHE_PATTERNS = re.compile(
+    r"(/|^)(cache|\.cache|code_cache|http-cache|image_cache|"
+    r"shader_cache|app_webview|WebCache|GlideCache|OkHttp|"
+    r"picasso-cache|fresco-cache|exo-cache|diskcache|"
+    r"preload|tmp|temp)(/|$)",
+    re.IGNORECASE,
+)
+
+_THUMBNAIL_DUMP_PATTERNS = re.compile(
+    r"(/|^)(\.thumbnails|\.Thumbs|thumbs|thumbnails|thumbnail|"
+    r"\.thumb|dump|\.dump|\.trashbin|\.Trash|LOST\.DIR)(/|$)"
+    r"|\.(thumb|dmp|mdmp|core)$"
+    r"|(thumbs\.db|desktop\.ini)$",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +76,8 @@ class TransferConfig:
     unsynced_packages: List[str] = field(default_factory=list)
     wifi: bool = False           # Needs root
     custom_paths: List[str] = field(default_factory=list)
+    ignore_cache: bool = True
+    ignore_thumbnails: bool = True
 
 
 @dataclass
@@ -80,12 +112,20 @@ class TransferManager:
         self._progress_cb: Optional[Callable[[TransferProgress], None]] = None
         self._transfer_progress = TransferProgress()
         self.accelerator = TransferAccelerator()
+        # Child managers created during operations; tracked for cancel cascade
+        self._child_backup_mgr: Optional[BackupManager] = None
+        self._child_restore_mgr: Optional[RestoreManager] = None
 
     def set_progress_callback(self, cb: Callable[[TransferProgress], None]):
         self._progress_cb = cb
 
     def cancel(self):
         self._cancel_flag.set()
+        # Cascade cancel to any child managers running in sub-steps
+        if self._child_backup_mgr is not None:
+            self._child_backup_mgr.cancel()
+        if self._child_restore_mgr is not None:
+            self._child_restore_mgr.cancel()
 
     def _emit(self):
         if self._progress_cb:
@@ -120,6 +160,19 @@ class TransferManager:
             return False, f"Target device state: {tgt.state} (expected: device)"
 
         return True, "Both devices ready"
+
+    def _get_free_bytes(self, serial: str) -> int:
+        """Query free storage bytes on a device via ``df``."""
+        try:
+            df_out = self.adb.run_shell("df /data", serial)
+            lines = df_out.splitlines()
+            if len(lines) >= 2:
+                cols = lines[1].split()
+                if len(cols) >= 4:
+                    return int(cols[3]) * 1024  # KB → bytes
+        except Exception as exc:
+            log.warning("Failed to query free space on %s: %s", serial, exc)
+        return -1  # unknown
 
     def get_transfer_estimate(
         self, source_serial: str, config: TransferConfig
@@ -205,6 +258,8 @@ class TransferManager:
 
         backup_mgr = BackupManager(self.adb, transfer_backup_dir)
         restore_mgr = RestoreManager(self.adb, transfer_backup_dir)
+        self._child_backup_mgr = backup_mgr
+        self._child_restore_mgr = restore_mgr
 
         overall_success = True
         steps_done = 0
@@ -356,6 +411,8 @@ class TransferManager:
             self._transfer_progress.errors or "none",
         )
 
+        self._child_backup_mgr = None
+        self._child_restore_mgr = None
         return overall_success
 
     def _update_progress(self, phase: str, sub_phase: str, done: int, total: int):
@@ -428,14 +485,15 @@ class TransferManager:
         source_serial: str,
         target_serial: str,
         storage_path: str = "/storage/emulated/0",
+        ignore_cache: bool = True,
+        ignore_thumbnails: bool = True,
     ) -> bool:
         """Clone entire internal storage + apps + contacts + SMS.
 
         1. Index all files under *storage_path* on the source device.
-        2. Pull every file to a local staging area, preserving the
-           directory structure.
-        3. Push every file to the same path on the target device.
-        4. Additionally transfer apps, contacts, SMS and messaging apps
+        2. Stream files in batches: pull batch → push batch → delete
+           local staging to minimise disk usage.
+        3. Additionally transfer apps, contacts, SMS and messaging apps
            using the normal backup→restore pipeline.
 
         Progress is reported through the callback set via
@@ -479,9 +537,17 @@ class TransferManager:
         self._transfer_progress.sub_phase = "Memória interna (origem)"
         self._emit()
 
-        remote_files = self._index_storage(source_serial, storage_path)
+        remote_files = self._index_storage(
+            source_serial, storage_path,
+            ignore_cache=ignore_cache,
+            ignore_thumbnails=ignore_thumbnails,
+        )
         total_files = len(remote_files)
-        log.info("Indexed %d files on source (%s)", total_files, storage_path)
+        total_bytes = sum(s for _, s in remote_files)
+        log.info(
+            "Indexed %d files (%s) on source (%s)",
+            total_files, _fmt_bytes(total_bytes), storage_path,
+        )
 
         if total_files == 0:
             log.warning("No files found on source under %s", storage_path)
@@ -489,30 +555,100 @@ class TransferManager:
                 f"Nenhum arquivo encontrado em {storage_path}"
             )
 
-        # ---- 2. Pull from source → local staging (multi-threaded) -----
+        # ---- 1b. Verify target has enough free space ------------------
+        if total_files > 0 and not self._cancel_flag.is_set():
+            self._transfer_progress.phase = "indexing"
+            self._transfer_progress.sub_phase = "Verificando espaço no destino"
+            self._emit()
+
+            target_free = self._get_free_bytes(target_serial)
+            # Add a 5 % safety margin
+            required = int(total_bytes * 1.05)
+
+            if target_free >= 0:
+                log.info(
+                    "Target free space: %s  |  Required: %s",
+                    _fmt_bytes(target_free), _fmt_bytes(required),
+                )
+                if target_free < required:
+                    msg = (
+                        f"Espaço insuficiente no destino.\n"
+                        f"Necessário: {_fmt_bytes(required)}\n"
+                        f"Disponível: {_fmt_bytes(target_free)}\n"
+                        f"Faltam: {_fmt_bytes(required - target_free)}"
+                    )
+                    log.error("Insufficient space on target: %s", msg)
+                    self._transfer_progress.phase = "error"
+                    self._transfer_progress.errors.append(msg)
+                    self._emit()
+                    return False
+            else:
+                log.warning("Could not determine free space on target; proceeding anyway")
+
+        # ---- 2. Streamed transfer: pull batch → push batch → cleanup --
+        # Instead of staging ALL files locally, process in chunks to
+        # minimise local disk usage.  Each batch is: pull → push → delete.
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         staging_dir = self.work_dir / f"clone_{ts}"
         staging_dir.mkdir(parents=True, exist_ok=True)
+        storage_staging = staging_dir / "storage"
 
-        pulled = 0
-        pull_errors = 0
-        _pull_lock = threading.Lock()
+        BATCH_MAX_FILES = 200
+        BATCH_MAX_BYTES = 256 * 1024 * 1024  # 256 MB
 
-        if total_files > 0:
-            self._transfer_progress.phase = "backing_up"
-            self._transfer_progress.sub_phase = "Memória interna"
+        pulled_total = 0
+        pushed_total = 0
+        pull_errors_total = 0
+        push_errors_total = 0
+        files_done = 0
+
+        # Split into batches
+        batches: List[List[Tuple[str, int]]] = []
+        cur_batch: List[Tuple[str, int]] = []
+        cur_bytes = 0
+        for entry in remote_files:
+            cur_batch.append(entry)
+            cur_bytes += entry[1]
+            if len(cur_batch) >= BATCH_MAX_FILES or cur_bytes >= BATCH_MAX_BYTES:
+                batches.append(cur_batch)
+                cur_batch = []
+                cur_bytes = 0
+        if cur_batch:
+            batches.append(cur_batch)
+
+        total_batches = len(batches)
+
+        for batch_idx, batch in enumerate(batches, 1):
+            if self._cancel_flag.is_set():
+                break
+
+            batch_count = len(batch)
+            log.info(
+                "Streaming batch %d/%d  (%d files)",
+                batch_idx, total_batches, batch_count,
+            )
+
+            self._transfer_progress.phase = "streaming"
+            self._transfer_progress.sub_phase = (
+                f"Lote {batch_idx}/{total_batches} — baixando da origem"
+            )
             self._emit()
 
-            # Pre-create all parent directories locally
-            for remote_path, _ in remote_files:
+            # --- 2a. Pull batch to staging ---
+            _pull_lock = threading.Lock()
+            batch_pulled = 0
+            batch_pull_errors = 0
+
+            # Pre-create local dirs
+            for remote_path, _ in batch:
                 rel = remote_path[len(storage_path):].lstrip("/")
-                local_path = staging_dir / "storage" / rel
+                local_path = storage_staging / rel
                 local_path.parent.mkdir(parents=True, exist_ok=True)
 
-            def _pull_one(idx: int, remote_path: str, rel: str) -> bool:
+            def _pull_one(remote_path: str, rel: str) -> bool:
                 if self._cancel_flag.is_set():
                     return False
-                local_path = staging_dir / "storage" / rel
+                local_path = storage_staging / rel
                 try:
                     return self.adb.pull(remote_path, str(local_path), source_serial)
                 except Exception as exc:
@@ -520,63 +656,62 @@ class TransferManager:
                     return False
 
             pull_workers = self.accelerator.optimal_workers(
-                total_files,
-                avg_size_bytes=sum(s for _, s in remote_files) // max(total_files, 1),
+                batch_count,
+                avg_size_bytes=sum(s for _, s in batch) // max(batch_count, 1),
             )
-            pull_done = 0
+
             with ThreadPoolExecutor(max_workers=pull_workers) as pool:
                 futures = {}
-                for idx, (remote_path, size_bytes) in enumerate(remote_files, 1):
+                for remote_path, _ in batch:
                     rel = remote_path[len(storage_path):].lstrip("/")
-                    fut = pool.submit(_pull_one, idx, remote_path, rel)
-                    futures[fut] = (idx, rel)
+                    fut = pool.submit(_pull_one, remote_path, rel)
+                    futures[fut] = rel
 
                 for fut in as_completed(futures):
-                    idx, rel = futures[fut]
-                    pull_done += 1
+                    rel = futures[fut]
+                    files_done += 1
                     try:
-                        ok = fut.result()
-                        if ok:
+                        if fut.result():
                             with _pull_lock:
-                                pulled += 1
+                                batch_pulled += 1
                         else:
                             with _pull_lock:
-                                pull_errors += 1
+                                batch_pull_errors += 1
                     except Exception:
                         with _pull_lock:
-                            pull_errors += 1
+                            batch_pull_errors += 1
 
-                    # Update progress on main thread
                     self._transfer_progress.current_item = rel
-                    self._transfer_progress.percent = pull_done / total_files * 50  # 0-50%
+                    self._transfer_progress.percent = (
+                        files_done / total_files * 80  # 0-80%
+                    )
                     self._emit()
 
-            log.info("Pull complete: %d/%d (errors: %d)", pulled, total_files, pull_errors)
+            pulled_total += batch_pulled
+            pull_errors_total += batch_pull_errors
 
-        # ---- 3. Push local staging → target (multi-threaded) ----------
-        pushed = 0
-        push_errors = 0
-        _push_lock = threading.Lock()
-        storage_staging = staging_dir / "storage"
+            if self._cancel_flag.is_set():
+                break
 
-        if storage_staging.exists() and not self._cancel_flag.is_set():
+            # --- 2b. Push staged batch to target ---
+            self._transfer_progress.sub_phase = (
+                f"Lote {batch_idx}/{total_batches} — enviando para destino"
+            )
+            self._emit()
+
             local_files = [
                 f for f in storage_staging.rglob("*") if f.is_file()
             ]
-            total_push = len(local_files)
+            if not local_files:
+                continue
 
-            self._transfer_progress.phase = "restoring"
-            self._transfer_progress.sub_phase = "Memória interna"
-            self._emit()
-
-            # Pre-create all parent directories on target in one batch
+            # Pre-create remote parent dirs in one batch
             parent_dirs = set()
-            for local_file in local_files:
-                rel = local_file.relative_to(storage_staging).as_posix()
+            for lf in local_files:
+                rel = lf.relative_to(storage_staging).as_posix()
                 target_remote = f"{storage_path}/{rel}"
                 parent_dirs.add("/".join(target_remote.split("/")[:-1]))
 
-            # Batch mkdir (in chunks to avoid command line limits)
             dir_list = sorted(parent_dirs)
             chunk_size = 50
             for i in range(0, len(dir_list), chunk_size):
@@ -585,12 +720,15 @@ class TransferManager:
                 try:
                     self.adb.run_shell(f"mkdir -p '{dirs_str}'", target_serial)
                 except Exception:
-                    # Fall back to individual mkdir
                     for d in chunk:
                         try:
                             self.adb.run_shell(f"mkdir -p '{d}'", target_serial)
                         except Exception:
                             pass
+
+            _push_lock = threading.Lock()
+            batch_pushed = 0
+            batch_push_errors = 0
 
             def _push_one(local_file: Path, rel: str) -> bool:
                 if self._cancel_flag.is_set():
@@ -603,85 +741,85 @@ class TransferManager:
                     return False
 
             push_workers = self.accelerator.optimal_workers(
-                total_push,
-                avg_size_bytes=sum(f.stat().st_size for f in local_files) // max(total_push, 1),
+                len(local_files),
+                avg_size_bytes=(
+                    sum(f.stat().st_size for f in local_files)
+                    // max(len(local_files), 1)
+                ),
             )
-            push_done = 0
+
             with ThreadPoolExecutor(max_workers=push_workers) as pool:
                 futures = {}
-                for local_file in local_files:
-                    rel = local_file.relative_to(storage_staging).as_posix()
-                    fut = pool.submit(_push_one, local_file, rel)
+                for lf in local_files:
+                    rel = lf.relative_to(storage_staging).as_posix()
+                    fut = pool.submit(_push_one, lf, rel)
                     futures[fut] = rel
 
                 for fut in as_completed(futures):
                     rel = futures[fut]
-                    push_done += 1
                     try:
-                        ok = fut.result()
-                        if ok:
+                        if fut.result():
                             with _push_lock:
-                                pushed += 1
+                                batch_pushed += 1
                         else:
                             with _push_lock:
-                                push_errors += 1
+                                batch_push_errors += 1
                     except Exception:
                         with _push_lock:
-                            push_errors += 1
+                            batch_push_errors += 1
 
                     self._transfer_progress.current_item = rel
-                    self._transfer_progress.percent = 50 + (push_done / total_push * 30)  # 50-80%
                     self._emit()
 
-            log.info("Push complete: %d/%d (errors: %d)", pushed, total_push, push_errors)
+            pushed_total += batch_pushed
+            push_errors_total += batch_push_errors
 
-        if pull_errors or push_errors:
+            # --- 2c. Cleanup staging for this batch ---
+            # Remove files that were successfully pushed to free disk space
+            for lf in local_files:
+                try:
+                    lf.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            # Remove empty directories
+            for d in sorted(
+                (p for p in storage_staging.rglob("*") if p.is_dir()),
+                reverse=True,
+            ):
+                try:
+                    d.rmdir()  # only removes if empty
+                except OSError:
+                    pass
+
+            log.info(
+                "Batch %d/%d done: pulled=%d pushed=%d  (batch errors: pull=%d push=%d)",
+                batch_idx, total_batches,
+                batch_pulled, batch_pushed,
+                batch_pull_errors, batch_push_errors,
+            )
+
+        log.info(
+            "Streamed transfer totals: pulled=%d/%d pushed=%d  (errors: pull=%d push=%d)",
+            pulled_total, total_files, pushed_total,
+            pull_errors_total, push_errors_total,
+        )
+
+        if pull_errors_total or push_errors_total:
             self._transfer_progress.errors.append(
-                f"Ficheiros: {pull_errors} erros ao copiar da origem, "
-                f"{push_errors} erros ao copiar para destino"
+                f"Ficheiros: {pull_errors_total} erros ao copiar da origem, "
+                f"{push_errors_total} erros ao copiar para destino"
             )
             overall_success = False
 
-        # ---- 3b. Checksum verification (GPU-accelerated if available) --
-        if (
-            self.accelerator.verify_checksums
-            and pushed > 0
-            and not self._cancel_flag.is_set()
-        ):
-            self._transfer_progress.phase = "verifying"
-            self._transfer_progress.sub_phase = "Integridade (checksum)"
-            self._emit()
-
-            try:
-                matched, vtotal, mismatched = verify_transfer(
-                    staging_dir=staging_dir,
-                    storage_path=storage_path,
-                    adb_core=self.adb,
-                    target_serial=target_serial,
-                    algo=self.accelerator.checksum_algo,
-                    max_workers=self.accelerator.max_push_workers,
-                    use_gpu=self.accelerator.gpu_enabled,
-                    progress_cb=lambda d, t, f: self._update_progress(
-                        "verifying", f"Checksum {d}/{t}", d, t,
-                    ),
-                )
-                if mismatched:
-                    self._transfer_progress.errors.append(
-                        f"Verificação: {len(mismatched)}/{vtotal} arquivos com checksum diferente"
-                    )
-                    overall_success = False
-                else:
-                    log.info("Checksum verification passed: %d/%d OK", matched, vtotal)
-            except Exception as exc:
-                log.warning("Checksum verification failed: %s", exc)
-
-        # ---- 4. Transfer apps, contacts, SMS, messaging ---------------
+        # ---- 3. Transfer apps, contacts, SMS, messaging ---------------
         if not self._cancel_flag.is_set():
             transfer_backup_dir = staging_dir / "app_transfer"
             transfer_backup_dir.mkdir(parents=True, exist_ok=True)
 
             backup_mgr = BackupManager(self.adb, transfer_backup_dir)
             restore_mgr = RestoreManager(self.adb, transfer_backup_dir)
+            self._child_backup_mgr = backup_mgr
+            self._child_restore_mgr = restore_mgr
 
             extra_steps = [
                 ("apps", "Aplicativos"),
@@ -781,22 +919,27 @@ class TransferManager:
             "Full storage clone %s in %.1fs  |  files pulled=%d pushed=%d  |  errors=%s",
             "completed" if overall_success else "completed with errors",
             elapsed,
-            pulled,
-            pushed,
+            pulled_total,
+            pushed_total,
             self._transfer_progress.errors or "none",
         )
 
+        self._child_backup_mgr = None
+        self._child_restore_mgr = None
         return overall_success
 
     # ------------------------------------------------------------------
     # Helpers – storage indexing
     # ------------------------------------------------------------------
     def _index_storage(
-        self, serial: str, storage_path: str
+        self, serial: str, storage_path: str,
+        ignore_cache: bool = False,
+        ignore_thumbnails: bool = False,
     ) -> List[Tuple[str, int]]:
         """Return list of (remote_path, size_bytes) for all files under *storage_path*.
 
         Uses ``find … | xargs stat`` to avoid ARG_MAX issues.
+        Optionally filters out cache and thumbnail/dump paths.
         """
         files: List[Tuple[str, int]] = []
         try:
@@ -817,6 +960,13 @@ class TransferManager:
                     size = int(parts[1])
                 except ValueError:
                     size = 0
+
+                # Apply filters
+                if ignore_cache and _CACHE_PATTERNS.search(path_str):
+                    continue
+                if ignore_thumbnails and _THUMBNAIL_DUMP_PATTERNS.search(path_str):
+                    continue
+
                 files.append((path_str, size))
         except Exception as exc:
             log.warning("Storage indexing failed for %s: %s", storage_path, exc)
