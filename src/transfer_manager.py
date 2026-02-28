@@ -41,7 +41,7 @@ def _fmt_bytes(size: int) -> str:
 # Filter patterns for cache / dump / thumbnail exclusion
 # ---------------------------------------------------------------------------
 _CACHE_PATTERNS = re.compile(
-    r"(/|^)([^/]*cache[^/]*|preload|tmp|temp)(/|$)",
+    r"(/|^)([^/]*(?:cache|preload)[^/]*|tmp|temp)(/|$)",
     re.IGNORECASE,
 )
 
