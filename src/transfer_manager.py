@@ -108,6 +108,7 @@ class TransferManager:
         self._cancel_flag = threading.Event()
         self._progress_cb: Optional[Callable[[TransferProgress], None]] = None
         self._transfer_progress = TransferProgress()
+        self._start_time: Optional[float] = None
         self.accelerator = TransferAccelerator()
         # Child managers created during operations; tracked for cancel cascade
         self._child_backup_mgr: Optional[BackupManager] = None
@@ -125,6 +126,8 @@ class TransferManager:
             self._child_restore_mgr.cancel()
 
     def _emit(self):
+        if self._start_time is not None:
+            self._transfer_progress.elapsed_seconds = time.time() - self._start_time
         if self._progress_cb:
             try:
                 self._progress_cb(self._transfer_progress)
@@ -497,7 +500,7 @@ class TransferManager:
         ``set_progress_callback()``.
         """
         self._cancel_flag.clear()
-        start_time = time.time()
+        self._start_time = time.time()
 
         # --- Validate --------------------------------------------------
         valid, msg = self.validate_devices(source_serial, target_serial)
@@ -597,7 +600,8 @@ class TransferManager:
         pushed_total = 0
         pull_errors_total = 0
         push_errors_total = 0
-        files_done = 0
+        files_pulled = 0
+        files_pushed = 0
 
         # Split into batches
         batches: List[List[Tuple[str, int]]] = []
@@ -666,7 +670,7 @@ class TransferManager:
 
                 for fut in as_completed(futures):
                     rel = futures[fut]
-                    files_done += 1
+                    files_pulled += 1
                     try:
                         if fut.result():
                             with _pull_lock:
@@ -680,7 +684,7 @@ class TransferManager:
 
                     self._transfer_progress.current_item = rel
                     self._transfer_progress.percent = (
-                        files_done / total_files * 80  # 0-80%
+                        files_pulled / total_files * 40  # 0-40% (pull)
                     )
                     self._emit()
 
@@ -754,6 +758,7 @@ class TransferManager:
 
                 for fut in as_completed(futures):
                     rel = futures[fut]
+                    files_pushed += 1
                     try:
                         if fut.result():
                             with _push_lock:
@@ -766,6 +771,9 @@ class TransferManager:
                             batch_push_errors += 1
 
                     self._transfer_progress.current_item = rel
+                    self._transfer_progress.percent = (
+                        40 + files_pushed / total_files * 40  # 40-80% (push)
+                    )
                     self._emit()
 
             pushed_total += batch_pushed
@@ -904,18 +912,17 @@ class TransferManager:
                     overall_success = False
 
         # ---- 5. Finish -----------------------------------------------
-        elapsed = time.time() - start_time
         self._transfer_progress.phase = (
             "complete" if overall_success else "complete_with_errors"
         )
         self._transfer_progress.percent = 100
-        self._transfer_progress.elapsed_seconds = elapsed
         self._emit()
+        self._start_time = None
 
         log.info(
             "Full storage clone %s in %.1fs  |  files pulled=%d pushed=%d  |  errors=%s",
             "completed" if overall_success else "completed with errors",
-            elapsed,
+            self._transfer_progress.elapsed_seconds,
             pulled_total,
             pushed_total,
             self._transfer_progress.errors or "none",
