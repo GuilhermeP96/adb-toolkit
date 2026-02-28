@@ -72,7 +72,11 @@
     "select_critical": "Select Critical",
     "select_none": "Select None",
     "time": "Time",
-    "warnings": "warnings"
+    "warnings": "warnings",
+    "no_device": "No device",
+    "device_label": "📱 Device:",
+    "select_device_first": "Select a device first.",
+    "ios_not_supported_feature": "This feature is not available for iOS devices."
   },
   "devices": {
     "title": "Connected Devices",
@@ -382,7 +386,8 @@
     "scan_no_apps": "No messaging apps found on device.",
     "scanning_btn": "Scanning...",
     "scanning_local_data": "Scanning local app data...",
-    "select_items_msg": "Select at least one item."
+    "select_items_msg": "Select at least one item.",
+    "ios_full_not_supported": "Full backup (ADB) is not supported for iOS devices. Use Selective Backup instead."
   },
   "restore": {
     "title": "♻️ Restore Device",
@@ -415,7 +420,8 @@
     "phase_contacts": "Restoring contacts…",
     "phase_sms": "Restoring messages…",
     "confirm_title": "Confirm Restore",
-    "no_selection": "Select items to restore."
+    "no_selection": "Select items to restore.",
+    "ios_not_supported": "Restore to iOS devices is not yet supported."
   },
   "transfer": {
     "title": "🔄 Device-to-Device Transfer",

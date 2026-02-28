@@ -72,7 +72,11 @@
     "select_critical": "Selecionar Criticos",
     "select_none": "Limpar Selecao",
     "time": "Tempo",
-    "warnings": "avisos"
+    "warnings": "avisos",
+    "no_device": "Nenhum dispositivo",
+    "device_label": "📱 Dispositivo:",
+    "select_device_first": "Selecione um dispositivo primeiro.",
+    "ios_not_supported_feature": "Este recurso não está disponível para dispositivos iOS."
   },
   "devices": {
     "title": "Dispositivos Conectados",
@@ -382,7 +386,8 @@
     "scan_no_apps": "Nenhum app de mensagem encontrado no dispositivo.",
     "scanning_btn": "Escaneando...",
     "scanning_local_data": "Escaneando dados locais de apps...",
-    "select_items_msg": "Selecione ao menos um item."
+    "select_items_msg": "Selecione ao menos um item.",
+    "ios_full_not_supported": "Backup completo (ADB) não é suportado para dispositivos iOS. Use Backup Seletivo."
   },
   "restore": {
     "title": "♻️ Restaurar Dispositivo",
@@ -415,7 +420,8 @@
     "phase_contacts": "Restaurando contatos…",
     "phase_sms": "Restaurando mensagens…",
     "confirm_title": "Confirmar Restauracao",
-    "no_selection": "Selecione itens para restaurar."
+    "no_selection": "Selecione itens para restaurar.",
+    "ios_not_supported": "Restauração para dispositivos iOS ainda não é suportada."
   },
   "transfer": {
     "title": "🔄 Transferência entre Dispositivos",

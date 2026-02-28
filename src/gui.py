@@ -121,6 +121,7 @@ class ADBToolkitApp(ctk.CTk):
         self._driver_install_running = False
         self._ui_locked = False
         self._confirm_dlg = None  # Device confirmation overlay
+        self._tab_device_menus: List[ctk.CTkOptionMenu] = []  # per-tab device selectors
 
         # Window setup
         self.title(t("app.window_title"))
@@ -493,7 +494,15 @@ class ADBToolkitApp(ctk.CTk):
             text=t("cleanup.subtitle"),
             font=ctk.CTkFont(size=12),
             text_color=COLORS["text_dim"],
-        ).pack(anchor="w", padx=12, pady=(0, 8))
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        # Device selector
+        dev_row = ctk.CTkFrame(header, fg_color="transparent")
+        dev_row.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkLabel(dev_row, text=t("common.device_label")).pack(side="left", padx=(0, 8))
+        self.cleanup_device_menu = self._build_device_selector(dev_row)
+        self.cleanup_device_menu.pack(side="left")
+        self._tab_device_menus.append(self.cleanup_device_menu)
 
         # ------ Per-mode rows ------
         self._cleanup_mode_vars: Dict[CleanupMode, ctk.BooleanVar] = {}
@@ -627,8 +636,16 @@ class ADBToolkitApp(ctk.CTk):
         return [m for m in MODE_ORDER if self._cleanup_mode_vars.get(m, ctk.BooleanVar()).get()]
 
     def _start_cleanup_scan(self):
-        serial = self._get_selected_device()
+        serial = self._get_selected_device(self.cleanup_device_menu)
         if not serial:
+            return
+
+        # Cleanup is Android-only
+        if self._is_ios_serial(serial):
+            messagebox.showwarning(
+                t("common.warning"),
+                t("common.ios_not_supported_feature"),
+            )
             return
 
         modes = self._get_enabled_cleanup_modes()
@@ -765,7 +782,7 @@ class ADBToolkitApp(ctk.CTk):
         if not self._cleanup_estimates:
             return
 
-        serial = self._get_selected_device()
+        serial = self._get_selected_device(self.cleanup_device_menu)
         if not serial:
             return
 
@@ -897,7 +914,15 @@ class ADBToolkitApp(ctk.CTk):
             hdr,
             text=t("toolbox.subtitle"),
             font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"],
-        ).pack(anchor="w", padx=12, pady=(0, 8))
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        # Device selector
+        tb_dev_row = ctk.CTkFrame(hdr, fg_color="transparent")
+        tb_dev_row.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkLabel(tb_dev_row, text=t("common.device_label")).pack(side="left", padx=(0, 8))
+        self.toolbox_device_menu = self._build_device_selector(tb_dev_row)
+        self.toolbox_device_menu.pack(side="left")
+        self._tab_device_menus.append(self.toolbox_device_menu)
 
         # ── Device Info section ──
         self._tb_section(scroll, t("toolbox.section.info"))
@@ -1200,8 +1225,8 @@ class ADBToolkitApp(ctk.CTk):
         self._safe_after(0, _do)
 
     def _tb_serial(self) -> Optional[str]:
-        """Get selected device serial, with user warning."""
-        s = self._get_selected_device()
+        """Get selected device serial from toolbox selector, with user warning."""
+        s = self._get_selected_device(self.toolbox_device_menu)
         if not s:
             return None
         return s
@@ -1212,6 +1237,10 @@ class ADBToolkitApp(ctk.CTk):
         if not serial:
             return
         self._tb_write(t("toolbox.msg.collecting_info"), clear=True)
+
+        if self._is_ios_serial(serial):
+            self._tb_ios_device_info(serial)
+            return
 
         def _run():
             try:
@@ -1239,6 +1268,9 @@ class ADBToolkitApp(ctk.CTk):
     def _tb_battery_info(self):
         serial = self._tb_serial()
         if not serial:
+            return
+        if self._is_ios_serial(serial):
+            self._tb_ios_battery_info(serial)
             return
         self._tb_write(t("toolbox.msg.reading_battery"), clear=True)
 
@@ -1270,6 +1302,9 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
+        if self._is_ios_serial(serial):
+            self._tb_ios_storage_info(serial)
+            return
         self._tb_write(t("toolbox.msg.reading_storage"), clear=True)
 
         def _run():
@@ -1289,7 +1324,93 @@ class ADBToolkitApp(ctk.CTk):
 
         threading.Thread(target=_run, daemon=True).start()
 
+    # -- iOS-specific Toolbox info helpers ----------------------------------
+    def _tb_ios_device_info(self, serial: str):
+        """Show iOS device info from UnifiedDeviceInfo."""
+        self._tb_write(t("toolbox.msg.collecting_info"), clear=True)
+
+        def _run():
+            try:
+                udev = self.unified_devices.get(serial)
+                if not udev:
+                    iface = self.device_mgr.get_interface(serial)
+                    if iface:
+                        udev = iface.get_device_details(serial)
+                if not udev:
+                    self._tb_write(t("common.error") + ": Device not found", clear=True)
+                    return
+                lines = [
+                    t("toolbox.msg.info_header"),
+                    f"  Platform:      🍎 iOS {udev.os_version}",
+                    f"  {t('toolbox.msg.model')}       {udev.model}",
+                    f"  Device class:  {udev.device_class}",
+                    f"  Build:         {udev.ios_build}",
+                    f"  UDID:          {udev.udid or serial}",
+                ]
+                batt = udev.battery_level
+                if batt >= 0:
+                    lines.append(f"  {t('toolbox.msg.battery_level')}      {batt}%")
+                stor = udev.storage_summary()
+                if stor:
+                    lines.append(f"  💾 Storage:     {stor}")
+                self._tb_write("\n".join(lines), clear=True)
+            except Exception as exc:
+                self._tb_write(f"{t('common.error')}: {exc}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_ios_battery_info(self, serial: str):
+        """Show iOS battery from UnifiedDeviceInfo."""
+        self._tb_write(t("toolbox.msg.reading_battery"), clear=True)
+        udev = self.unified_devices.get(serial)
+        if udev and udev.battery_level >= 0:
+            lines = [
+                t("toolbox.msg.battery_header"),
+                f"  {t('toolbox.msg.battery_level')}        {udev.battery_level}%",
+            ]
+            self._tb_write("\n".join(lines), clear=True)
+        else:
+            self._tb_write(f"  {t('toolbox.msg.battery_level')}  N/A", clear=True)
+
+    def _tb_ios_storage_info(self, serial: str):
+        """Show iOS storage from DeviceInterface."""
+        self._tb_write(t("toolbox.msg.reading_storage"), clear=True)
+
+        def _run():
+            try:
+                iface = self.device_mgr.get_interface(serial)
+                if not iface:
+                    self._tb_write(t("common.error") + ": Device not found", clear=True)
+                    return
+                total = iface.get_total_bytes(serial)
+                free = iface.get_free_bytes(serial)
+                lines = [
+                    t("toolbox.msg.storage_header"),
+                    f"  {t('common.total')}:  {format_bytes(total)}",
+                    f"  {t('common.free')}:   {format_bytes(free)}",
+                ]
+                if total > 0:
+                    used = total - free
+                    pct = used / total * 100
+                    lines.append(f"  Used:   {format_bytes(used)}  ({pct:.1f}%)")
+                self._tb_write("\n".join(lines), clear=True)
+            except Exception as exc:
+                self._tb_write(f"{t('common.error')}: {exc}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_require_android(self) -> bool:
+        """Check if the currently selected toolbox device is Android.
+        Shows a warning and returns False if it's iOS."""
+        serial = self._tb_serial()
+        if serial and self._is_ios_serial(serial):
+            self._tb_write(f"⚠️ {t('common.ios_not_supported_feature')}", clear=True)
+            return False
+        return True
+
     def _tb_network_info(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1314,6 +1435,8 @@ class ADBToolkitApp(ctk.CTk):
 
     # -- App Management callbacks --------------------------------------------
     def _tb_list_apps(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1333,6 +1456,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_clear_all_cache(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1355,6 +1480,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_force_stop_all(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1375,6 +1502,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_uninstall_app(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1393,6 +1522,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_force_stop_app(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1408,6 +1539,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_clear_data(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1427,6 +1560,8 @@ class ADBToolkitApp(ctk.CTk):
 
     # -- Performance callbacks -----------------------------------------------
     def _tb_kill_background(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1443,6 +1578,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_fstrim(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1455,6 +1592,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_reset_battery(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1467,6 +1606,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_set_animation(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1484,6 +1625,8 @@ class ADBToolkitApp(ctk.CTk):
 
     # -- Screen Capture callbacks --------------------------------------------
     def _tb_screenshot(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1499,6 +1642,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_screenrecord(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1515,6 +1660,8 @@ class ADBToolkitApp(ctk.CTk):
 
     # -- WiFi ADB callbacks --------------------------------------------------
     def _tb_enable_wifi_adb(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1536,6 +1683,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_disable_wifi_adb(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1550,6 +1699,8 @@ class ADBToolkitApp(ctk.CTk):
 
     # -- Developer tools callbacks -------------------------------------------
     def _tb_toggle_stay_awake(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1563,6 +1714,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_toggle_show_touches(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1576,6 +1729,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_open_shell(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1598,6 +1753,8 @@ class ADBToolkitApp(ctk.CTk):
 
     # -- Reboot callbacks ----------------------------------------------------
     def _tb_reboot_normal(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1606,6 +1763,8 @@ class ADBToolkitApp(ctk.CTk):
             self._tb_write(t("toolbox.msg.rebooting"), clear=True)
 
     def _tb_reboot_recovery(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1614,6 +1773,8 @@ class ADBToolkitApp(ctk.CTk):
             self._tb_write(t("toolbox.msg.recovery_rebooting"), clear=True)
 
     def _tb_reboot_bootloader(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1622,6 +1783,8 @@ class ADBToolkitApp(ctk.CTk):
             self._tb_write(t("toolbox.msg.bootloader_rebooting"), clear=True)
 
     def _tb_reboot_fastboot(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1630,6 +1793,8 @@ class ADBToolkitApp(ctk.CTk):
             self._tb_write(t("toolbox.msg.fastboot_rebooting"), clear=True)
 
     def _tb_shutdown(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1639,6 +1804,8 @@ class ADBToolkitApp(ctk.CTk):
 
     # -- Logcat callbacks ----------------------------------------------------
     def _tb_capture_logcat(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1652,6 +1819,8 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=_run, daemon=True).start()
 
     def _tb_clear_logcat(self):
+        if not self._tb_require_android():
+            return
         serial = self._tb_serial()
         if not serial:
             return
@@ -1681,7 +1850,15 @@ class ADBToolkitApp(ctk.CTk):
             opts_frame,
             text=t("backup.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
-        ).pack(anchor="w", padx=12, pady=(12, 8))
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        # Device selector
+        bk_dev_row = ctk.CTkFrame(opts_frame, fg_color="transparent")
+        bk_dev_row.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkLabel(bk_dev_row, text=t("common.device_label")).pack(side="left", padx=(0, 8))
+        self.backup_device_menu = self._build_device_selector(bk_dev_row)
+        self.backup_device_menu.pack(side="left")
+        self._tab_device_menus.append(self.backup_device_menu)
 
         # Backup type selection
         type_frame = ctk.CTkFrame(opts_frame, fg_color="transparent")
@@ -1913,8 +2090,11 @@ class ADBToolkitApp(ctk.CTk):
 
     def _detect_messaging_apps(self):
         """Detect which messaging apps are installed on the selected device."""
-        serial = self._get_selected_device()
+        serial = self._get_selected_device(self.backup_device_menu)
         if not serial:
+            return
+        if self._is_ios_serial(serial):
+            messagebox.showinfo(t("common.warning"), t("common.ios_not_supported_feature"))
             return
 
         self._set_status(t("backup.detecting_messaging"))
@@ -1949,8 +2129,11 @@ class ADBToolkitApp(ctk.CTk):
     # ------------------------------------------------------------------
     def _detect_unsynced_apps(self):
         """Scan device for apps with local-only data (runs in background)."""
-        serial = self._get_selected_device()
+        serial = self._get_selected_device(self.backup_device_menu)
         if not serial:
+            return
+        if self._is_ios_serial(serial):
+            messagebox.showinfo(t("common.warning"), t("common.ios_not_supported_feature"))
             return
 
         self.btn_detect_unsynced.configure(state="disabled", text=t("backup.scanning_btn"))
@@ -2130,7 +2313,15 @@ class ADBToolkitApp(ctk.CTk):
             sel_frame,
             text=t("restore.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
-        ).pack(anchor="w", padx=12, pady=(12, 8))
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        # Device selector
+        rs_dev_row = ctk.CTkFrame(sel_frame, fg_color="transparent")
+        rs_dev_row.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkLabel(rs_dev_row, text=t("common.device_label")).pack(side="left", padx=(0, 8))
+        self.restore_device_menu = self._build_device_selector(rs_dev_row)
+        self.restore_device_menu.pack(side="left")
+        self._tab_device_menus.append(self.restore_device_menu)
 
         sel_row = ctk.CTkFrame(sel_frame, fg_color="transparent")
         sel_row.pack(fill="x", padx=12, pady=(0, 8))
@@ -3145,6 +3336,9 @@ class ADBToolkitApp(ctk.CTk):
         # Update transfer device menus (preserves user selection)
         self._update_transfer_menus()
 
+        # Update ALL per-tab device selectors (cleanup, toolbox, backup, restore)
+        self._update_all_device_selectors()
+
         # Update backup/restore tree browsers with first available device serial
         first_serial = list(self.devices.keys())[0] if self.devices else None
         self.backup_tree.set_serial(first_serial)
@@ -3193,6 +3387,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # Refresh transfer menus with enriched names
         self._update_transfer_menus()
+        self._update_all_device_selectors()
 
     def _create_device_card(self, serial: str, dev: DeviceInfo):
         """Create a card widget for a device."""
@@ -3718,12 +3913,24 @@ class ADBToolkitApp(ctk.CTk):
     # Backup operations
     # ==================================================================
     def _start_backup(self):
-        serial = self._get_selected_device()
+        serial = self._get_selected_device(self.backup_device_menu)
         if not serial:
             return
 
-        # Update tree serial before backup
-        self.backup_tree.set_serial(serial)
+        is_ios = self._is_ios_serial(serial)
+
+        # iOS: only media, contacts, sms are supported — warn if ADB-only mode
+        backup_type = self.backup_type_var.get()
+        if is_ios and backup_type == "full":
+            messagebox.showwarning(
+                t("common.warning"),
+                t("backup.ios_full_not_supported"),
+            )
+            return
+
+        # Update tree serial before backup (Android only)
+        if not is_ios:
+            self.backup_tree.set_serial(serial)
 
         self._lock_ui()
         self.btn_cancel_backup.configure(state="normal")
@@ -3919,8 +4126,16 @@ class ADBToolkitApp(ctk.CTk):
     # Restore operations
     # ==================================================================
     def _start_restore(self):
-        serial = self._get_selected_device()
+        serial = self._get_selected_device(self.restore_device_menu)
         if not serial:
+            return
+
+        # Restore is currently Android-only
+        if self._is_ios_serial(serial):
+            messagebox.showwarning(
+                t("common.warning"),
+                t("restore.ios_not_supported"),
+            )
             return
 
         selected = self.restore_backup_menu.get()
@@ -5221,23 +5436,135 @@ class ADBToolkitApp(ctk.CTk):
     # ==================================================================
     # Helpers
     # ==================================================================
-    def _get_selected_device(self) -> Optional[str]:
-        """Get a device serial, asking user if multiple are connected."""
-        if not self.devices:
+
+    # ---- Shared device selector helpers ---------------------------------
+    def _get_all_device_entries(self) -> List[str]:
+        """Build a combined list of Android + iOS device labels for dropdowns.
+
+        Format: ``"🤖 Name (serial)"`` or ``"🍎 Name (serial)"``.
+        """
+        entries: List[str] = []
+        for s, dev in self.devices.items():
+            entries.append(f"🤖 {dev.friendly_name()} ({s})")
+        for s, udev in self.unified_devices.items():
+            if udev.platform == DevicePlatform.IOS:
+                short = s[:16] + "…" if len(s) > 16 else s
+                entries.append(f"🍎 {udev.friendly_name()} ({short})")
+        return entries
+
+    def _build_device_selector(
+        self, parent: ctk.CTkFrame, *, width: int = 350,
+    ) -> ctk.CTkOptionMenu:
+        """Create a device-selector OptionMenu and register it for auto-update."""
+        entries = self._get_all_device_entries() or [t("common.no_device")]
+        menu = ctk.CTkOptionMenu(parent, values=entries, width=width)
+        if entries and entries[0] != t("common.no_device"):
+            menu.set(entries[0])
+        else:
+            menu.set(t("common.no_device"))
+        return menu
+
+    def _update_all_device_selectors(self):
+        """Refresh every per-tab device selector with the current device list."""
+        entries = self._get_all_device_entries() or [t("common.no_device")]
+        placeholder = t("common.no_device")
+
+        for menu in self._tab_device_menus:
+            try:
+                prev = menu.get()
+                menu.configure(values=entries)
+                if prev in entries:
+                    menu.set(prev)
+                elif entries != [placeholder]:
+                    menu.set(entries[0])
+                else:
+                    menu.set(placeholder)
+            except Exception:
+                pass
+
+    def _serial_from_selector(self, menu: ctk.CTkOptionMenu) -> Optional[str]:
+        """Extract the device serial from a selector value like '🤖 Name (SN123)'."""
+        val = menu.get()
+        if not val or val == t("common.no_device"):
+            return None
+        if "(" in val and ")" in val:
+            return val.split("(")[-1].rstrip(")")
+        return None
+
+    def _is_ios_serial(self, serial: str) -> bool:
+        """Return True if *serial* belongs to an iOS device."""
+        udev = self.unified_devices.get(serial)
+        if udev and udev.platform == DevicePlatform.IOS:
+            return True
+        # iOS UDIDs found via shortened display may need prefix match
+        for s, u in self.unified_devices.items():
+            if u.platform == DevicePlatform.IOS and (
+                serial == s or serial == s[:16] + "…"
+            ):
+                return True
+        return False
+
+    def _resolve_ios_full_serial(self, short_serial: str) -> Optional[str]:
+        """Resolve a potentially-truncated iOS serial to the full UDID."""
+        if short_serial in self.unified_devices:
+            return short_serial
+        for s in self.unified_devices:
+            if s[:16] + "…" == short_serial:
+                return s
+        return short_serial
+
+    def _get_selected_device(self, selector: Optional[ctk.CTkOptionMenu] = None) -> Optional[str]:
+        """Get a device serial from the given selector, or fall back to selection heuristics.
+
+        Parameters
+        ----------
+        selector : CTkOptionMenu, optional
+            Per-tab device selector.  If provided, the serial is extracted
+            from its current value.  Otherwise the old fallback logic is
+            used (``self.selected_device`` or single-device auto-pick).
+        """
+        # ── Per-tab selector path (preferred) ──
+        if selector is not None:
+            serial = self._serial_from_selector(selector)
+            if serial:
+                serial = self._resolve_ios_full_serial(serial)
+                return serial
+            # Selector had no valid value — show warning
+            all_count = len(self.devices) + sum(
+                1 for d in self.unified_devices.values()
+                if d.platform == DevicePlatform.IOS
+            )
+            if all_count == 0:
+                messagebox.showwarning(
+                    t("devices.no_device_title"),
+                    t("devices.no_device_msg"),
+                )
+            else:
+                messagebox.showwarning(
+                    t("common.warning"),
+                    t("common.select_device_first"),
+                )
+            return None
+
+        # ── Legacy fallback (no per-tab selector) ──
+        all_serials = list(self.devices.keys()) + [
+            s for s, u in self.unified_devices.items()
+            if u.platform == DevicePlatform.IOS
+        ]
+        if not all_serials:
             messagebox.showwarning(
                 t("devices.no_device_title"),
                 t("devices.no_device_msg"),
             )
             return None
 
-        if self.selected_device and self.selected_device in self.devices:
+        if self.selected_device and self.selected_device in all_serials:
             return self.selected_device
 
-        if len(self.devices) == 1:
-            return list(self.devices.keys())[0]
+        if len(all_serials) == 1:
+            return all_serials[0]
 
-        # Multiple devices — use the first one (could improve with a dialog)
-        return list(self.devices.keys())[0]
+        return all_serials[0]
 
     def _set_status(self, text: str):
         if self._closing:
