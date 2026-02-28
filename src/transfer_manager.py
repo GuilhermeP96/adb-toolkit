@@ -11,7 +11,6 @@ Orchestrates backup from source device and restore to target device:
 """
 
 import logging
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,38 +19,20 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from .adb_base import (
+    ADBManagerBase,
+    CACHE_PATTERNS,
+    OperationProgress,
+    THUMBNAIL_DUMP_PATTERNS,
+    safe_percent,
+)
 from .adb_core import ADBCore, DeviceInfo
 from .backup_manager import BackupManager, BackupManifest, BackupProgress
 from .restore_manager import RestoreManager
 from .accelerator import TransferAccelerator, verify_transfer, gpu_available, parallel_checksum
+from .utils import format_bytes
 
 log = logging.getLogger("adb_toolkit.transfer")
-
-
-def _fmt_bytes(size: int) -> str:
-    """Quick human-readable byte formatter."""
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if abs(size) < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} PB"
-
-
-# ---------------------------------------------------------------------------
-# Filter patterns for cache / dump / thumbnail exclusion
-# ---------------------------------------------------------------------------
-_CACHE_PATTERNS = re.compile(
-    r"(/|^)([^/]*(?:cache|preload)[^/]*|tmp|temp)(/|$)",
-    re.IGNORECASE,
-)
-
-_THUMBNAIL_DUMP_PATTERNS = re.compile(
-    r"(/|^)(\.thumbnails|\.Thumbs|thumbs|thumbnails|thumbnail|"
-    r"\.thumb|dump|\.dump|\.trashbin|\.Trash|LOST\.DIR)(/|$)"
-    r"|\.(thumb|dmp|mdmp|core)$"
-    r"|(thumbs\.db|desktop\.ini)$",
-    re.IGNORECASE,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -77,60 +58,42 @@ class TransferConfig:
     ignore_thumbnails: bool = True
 
 
-@dataclass
-class TransferProgress:
-    """Overall transfer progress."""
-    phase: str = ""              # scanning, backing_up, restoring, complete, error
-    sub_phase: str = ""          # apps, photos, contacts, etc.
-    current_item: str = ""
-    items_done: int = 0
-    items_total: int = 0
-    bytes_done: int = 0
-    bytes_total: int = 0
-    percent: float = 0.0
-    source_device: str = ""
-    target_device: str = ""
-    elapsed_seconds: float = 0.0
-    eta_seconds: float = 0.0
-    errors: List[str] = field(default_factory=list)
+# Backward-compatible alias — callers importing TransferProgress keep working.
+TransferProgress = OperationProgress
 
 
 # ---------------------------------------------------------------------------
 # Transfer Manager
 # ---------------------------------------------------------------------------
-class TransferManager:
+class TransferManager(ADBManagerBase):
     """Manages device-to-device transfer."""
 
     def __init__(self, adb: ADBCore, work_dir: Optional[Path] = None):
-        self.adb = adb
+        super().__init__(adb)
         self.work_dir = work_dir or (adb.base_dir / "transfers")
         self.work_dir.mkdir(parents=True, exist_ok=True)
-        self._cancel_flag = threading.Event()
-        self._progress_cb: Optional[Callable[[TransferProgress], None]] = None
         self._transfer_progress = TransferProgress()
-        self._start_time: Optional[float] = None
         self.accelerator = TransferAccelerator()
         # Child managers created during operations; tracked for cancel cascade
         self._child_backup_mgr: Optional[BackupManager] = None
         self._child_restore_mgr: Optional[RestoreManager] = None
 
-    def set_progress_callback(self, cb: Callable[[TransferProgress], None]):
-        self._progress_cb = cb
-
     def cancel(self):
+        """Cancel current operation and cascade to child managers."""
         self._cancel_flag.set()
-        # Cascade cancel to any child managers running in sub-steps
         if self._child_backup_mgr is not None:
             self._child_backup_mgr.cancel()
         if self._child_restore_mgr is not None:
             self._child_restore_mgr.cancel()
 
-    def _emit(self):
+    def _emit(self, progress: Optional[OperationProgress] = None):
+        """Emit progress — uses mutable _transfer_progress when no arg given."""
+        p = progress if progress is not None else self._transfer_progress
         if self._start_time is not None:
-            self._transfer_progress.elapsed_seconds = time.time() - self._start_time
+            p.elapsed_seconds = time.time() - self._start_time
         if self._progress_cb:
             try:
-                self._progress_cb(self._transfer_progress)
+                self._progress_cb(p)
             except Exception:
                 pass
 
@@ -223,8 +186,7 @@ class TransferManager:
         config: TransferConfig,
     ) -> bool:
         """Transfer data from source device to target device."""
-        self._cancel_flag.clear()
-        start_time = time.time()
+        self._begin_operation()
 
         # Validate
         valid, msg = self.validate_devices(source_serial, target_serial)
@@ -397,7 +359,7 @@ class TransferManager:
             self._transfer_progress.errors.append(str(exc))
             overall_success = False
 
-        elapsed = time.time() - start_time
+        elapsed = time.time() - self._start_time
         self._transfer_progress.phase = "complete" if overall_success else "complete_with_errors"
         self._transfer_progress.percent = 100
         self._transfer_progress.elapsed_seconds = elapsed
@@ -418,7 +380,7 @@ class TransferManager:
     def _update_progress(self, phase: str, sub_phase: str, done: int, total: int):
         self._transfer_progress.phase = phase
         self._transfer_progress.sub_phase = sub_phase
-        self._transfer_progress.percent = (done / total * 100) if total > 0 else 0
+        self._transfer_progress.percent = safe_percent(done, total)
         self._emit()
 
     def _transfer_wifi(self, source: str, target: str):
@@ -499,8 +461,7 @@ class TransferManager:
         Progress is reported through the callback set via
         ``set_progress_callback()``.
         """
-        self._cancel_flag.clear()
-        self._start_time = time.time()
+        self._begin_operation()
 
         # --- Validate --------------------------------------------------
         valid, msg = self.validate_devices(source_serial, target_serial)
@@ -537,8 +498,8 @@ class TransferManager:
         self._transfer_progress.sub_phase = "Memória interna (origem)"
         self._emit()
 
-        remote_files = self._index_storage(
-            source_serial, storage_path,
+        remote_files = self.list_remote_files(
+            source_serial, [storage_path],
             ignore_cache=ignore_cache,
             ignore_thumbnails=ignore_thumbnails,
         )
@@ -546,7 +507,7 @@ class TransferManager:
         total_bytes = sum(s for _, s in remote_files)
         log.info(
             "Indexed %d files (%s) on source (%s)",
-            total_files, _fmt_bytes(total_bytes), storage_path,
+            total_files, format_bytes(total_bytes), storage_path,
         )
 
         if total_files == 0:
@@ -568,14 +529,14 @@ class TransferManager:
             if target_free >= 0:
                 log.info(
                     "Target free space: %s  |  Required: %s",
-                    _fmt_bytes(target_free), _fmt_bytes(required),
+                    format_bytes(target_free), format_bytes(required),
                 )
                 if target_free < required:
                     msg = (
                         f"Espaço insuficiente no destino.\n"
-                        f"Necessário: {_fmt_bytes(required)}\n"
-                        f"Disponível: {_fmt_bytes(target_free)}\n"
-                        f"Faltam: {_fmt_bytes(required - target_free)}"
+                        f"Necessário: {format_bytes(required)}\n"
+                        f"Disponível: {format_bytes(target_free)}\n"
+                        f"Faltam: {format_bytes(required - target_free)}"
                     )
                     log.error("Insufficient space on target: %s", msg)
                     self._transfer_progress.phase = "error"
@@ -932,46 +893,3 @@ class TransferManager:
         self._child_restore_mgr = None
         return overall_success
 
-    # ------------------------------------------------------------------
-    # Helpers – storage indexing
-    # ------------------------------------------------------------------
-    def _index_storage(
-        self, serial: str, storage_path: str,
-        ignore_cache: bool = False,
-        ignore_thumbnails: bool = False,
-    ) -> List[Tuple[str, int]]:
-        """Return list of (remote_path, size_bytes) for all files under *storage_path*.
-
-        Uses ``find … | xargs stat`` to avoid ARG_MAX issues.
-        Optionally filters out cache and thumbnail/dump paths.
-        """
-        files: List[Tuple[str, int]] = []
-        try:
-            cmd = (
-                f"find {storage_path} -type f 2>/dev/null"
-                f" | xargs stat -c '%n|%s' 2>/dev/null"
-            )
-            out = self.adb.run_shell(cmd, serial, timeout=300)
-            for line in out.splitlines():
-                line = line.strip()
-                if "|" not in line:
-                    continue
-                parts = line.rsplit("|", 1)
-                if len(parts) != 2:
-                    continue
-                path_str = parts[0]
-                try:
-                    size = int(parts[1])
-                except ValueError:
-                    size = 0
-
-                # Apply filters
-                if ignore_cache and _CACHE_PATTERNS.search(path_str):
-                    continue
-                if ignore_thumbnails and _THUMBNAIL_DUMP_PATTERNS.search(path_str):
-                    continue
-
-                files.append((path_str, size))
-        except Exception as exc:
-            log.warning("Storage indexing failed for %s: %s", storage_path, exc)
-        return files

@@ -933,8 +933,15 @@ class ADBToolkitApp(ctk.CTk):
         self.restore_progress_label.pack(fill="x", padx=12, pady=(8, 2))
 
         self.restore_progress_bar = ctk.CTkProgressBar(progress_frame)
-        self.restore_progress_bar.pack(fill="x", padx=12, pady=(0, 8))
+        self.restore_progress_bar.pack(fill="x", padx=12, pady=(0, 4))
         self.restore_progress_bar.set(0)
+
+        self.restore_progress_detail = ctk.CTkLabel(
+            progress_frame, text="", anchor="w",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+        )
+        self.restore_progress_detail.pack(fill="x", padx=12, pady=(0, 8))
 
     # ==================================================================
     # TRANSFER TAB
@@ -2258,14 +2265,23 @@ class ADBToolkitApp(ctk.CTk):
             if self._closing:
                 return
             try:
-                self.backup_progress_label.configure(text=f"{p.phase}: {p.current_item}")
+                phase_text = p.phase
+                if p.sub_phase:
+                    phase_text += f" ({p.sub_phase})"
+                self.backup_progress_label.configure(text=f"{phase_text}: {p.current_item}")
                 self.backup_progress_bar.set(p.percent / 100)
-                detail = ""
+                detail_parts = []
                 if p.items_total:
-                    detail = f"{p.items_done}/{p.items_total} itens"
+                    detail_parts.append(f"{p.items_done}/{p.items_total} itens")
                 if p.bytes_total:
-                    detail += f"  |  {format_bytes(p.bytes_done)}/{format_bytes(p.bytes_total)}"
-                self.backup_progress_detail.configure(text=detail)
+                    detail_parts.append(f"{format_bytes(p.bytes_done)}/{format_bytes(p.bytes_total)}")
+                if p.elapsed_seconds > 0:
+                    detail_parts.append(f"Tempo: {format_duration(p.elapsed_seconds)}")
+                if p.eta_seconds and p.eta_seconds > 0:
+                    detail_parts.append(f"ETA: {format_duration(p.eta_seconds)}")
+                if p.errors:
+                    detail_parts.append(f"Erros: {len(p.errors)}")
+                self.backup_progress_detail.configure(text="  |  ".join(detail_parts))
             except Exception:
                 pass
         self._safe_after(0, _update)
@@ -2397,8 +2413,23 @@ class ADBToolkitApp(ctk.CTk):
             if self._closing:
                 return
             try:
-                self.restore_progress_label.configure(text=f"{p.phase}: {p.current_item}")
+                phase_text = p.phase
+                if p.sub_phase:
+                    phase_text += f" ({p.sub_phase})"
+                self.restore_progress_label.configure(text=f"{phase_text}: {p.current_item}")
                 self.restore_progress_bar.set(p.percent / 100)
+                detail_parts = []
+                if p.items_total:
+                    detail_parts.append(f"{p.items_done}/{p.items_total} itens")
+                if p.bytes_total:
+                    detail_parts.append(f"{format_bytes(p.bytes_done)}/{format_bytes(p.bytes_total)}")
+                if p.elapsed_seconds > 0:
+                    detail_parts.append(f"Tempo: {format_duration(p.elapsed_seconds)}")
+                if p.eta_seconds and p.eta_seconds > 0:
+                    detail_parts.append(f"ETA: {format_duration(p.eta_seconds)}")
+                if p.errors:
+                    detail_parts.append(f"Erros: {len(p.errors)}")
+                self.restore_progress_detail.configure(text="  |  ".join(detail_parts))
             except Exception:
                 pass
         self._safe_after(0, _update)

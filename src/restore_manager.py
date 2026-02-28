@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .adb_core import ADBCore, DeviceInfo
+from .adb_base import ADBManagerBase, OperationProgress, safe_percent
 from .backup_manager import BackupManifest, BackupProgress, MEDIA_PATHS
 
 log = logging.getLogger("adb_toolkit.restore")
@@ -28,27 +29,12 @@ log = logging.getLogger("adb_toolkit.restore")
 # ---------------------------------------------------------------------------
 # Restore Manager
 # ---------------------------------------------------------------------------
-class RestoreManager:
+class RestoreManager(ADBManagerBase):
     """Restores backups to Android devices."""
 
     def __init__(self, adb: ADBCore, backup_dir: Optional[Path] = None):
-        self.adb = adb
+        super().__init__(adb)
         self.backup_dir = backup_dir or (adb.base_dir / "backups")
-        self._cancel_flag = threading.Event()
-        self._progress_cb: Optional[Callable[[BackupProgress], None]] = None
-
-    def set_progress_callback(self, cb: Callable[[BackupProgress], None]):
-        self._progress_cb = cb
-
-    def cancel(self):
-        self._cancel_flag.set()
-
-    def _emit(self, progress: BackupProgress):
-        if self._progress_cb:
-            try:
-                self._progress_cb(progress)
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
     # Load backup info
@@ -65,7 +51,7 @@ class RestoreManager:
     # ------------------------------------------------------------------
     def restore_full(self, serial: str, backup_id: str) -> bool:
         """Restore a full ADB backup (.ab file)."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         manifest = self.get_backup_manifest(backup_id)
         if not manifest:
             log.error("Backup %s not found", backup_id)
@@ -110,7 +96,7 @@ class RestoreManager:
         specific_files: Optional[List[str]] = None,
     ) -> bool:
         """Restore files from a file backup."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         folder = self.backup_dir / backup_id / "files"
 
         if not folder.exists():
@@ -147,41 +133,13 @@ class RestoreManager:
                         files_to_restore.append((local_file, remote))
 
         total = len(files_to_restore)
-        total_bytes = sum(f[0].stat().st_size for f in files_to_restore)
-        bytes_done = 0
-
         log.info("Restoring %d files to device %s", total, serial)
-        self._emit(BackupProgress(
-            phase="restoring_files",
-            items_total=total,
-            bytes_total=total_bytes,
-        ))
 
-        success_count = 0
-        for i, (local, remote) in enumerate(files_to_restore):
-            if self._cancel_flag.is_set():
-                break
-
-            fsize = local.stat().st_size
-
-            # Ensure remote directory exists
-            remote_dir = os.path.dirname(remote)
-            self.adb.run_shell(f"mkdir -p '{remote_dir}'", serial)
-
-            if self.adb.push(str(local), remote, serial):
-                success_count += 1
-
-            bytes_done += fsize
-            pct = (bytes_done / total_bytes * 100) if total_bytes > 0 else 0
-            self._emit(BackupProgress(
-                phase="restoring_files",
-                current_item=os.path.basename(str(local)),
-                items_done=i + 1,
-                items_total=total,
-                bytes_done=bytes_done,
-                bytes_total=total_bytes,
-                percent=pct,
-            ))
+        # Push all files using shared helper (with elapsed/ETA auto-tracking)
+        success_count, bytes_done = self.push_with_progress(
+            serial, files_to_restore,
+            phase="restoring_files", sub_phase="files",
+        )
 
         self._emit(BackupProgress(phase="complete", percent=100))
         log.info("Restored %d/%d files", success_count, total)
@@ -201,7 +159,7 @@ class RestoreManager:
 
         Returns (success_count, total_count).
         """
-        self._cancel_flag.clear()
+        self._begin_operation()
         folder = self.backup_dir / backup_id / "apks"
 
         if not folder.exists():
@@ -230,7 +188,8 @@ class RestoreManager:
 
         total = len(install_items)
         log.info("Restoring %d apps to %s", total, serial)
-        self._emit(BackupProgress(phase="restoring_apps", items_total=total))
+        self._emit(BackupProgress(phase="restoring_apps", sub_phase="apps",
+                                  items_total=total))
 
         success = 0
         for i, (pkg_name, path) in enumerate(install_items):
@@ -239,10 +198,11 @@ class RestoreManager:
 
             self._emit(BackupProgress(
                 phase="restoring_apps",
+                sub_phase="apps",
                 current_item=pkg_name,
                 items_done=i,
                 items_total=total,
-                percent=(i / total * 100) if total > 0 else 0,
+                percent=safe_percent(i, total),
             ))
 
             try:
@@ -270,6 +230,7 @@ class RestoreManager:
             if data_file.exists() and data_file.stat().st_size > 24:
                 self._emit(BackupProgress(
                     phase="restoring_app_data",
+                    sub_phase="app_data",
                     current_item="Restoring app data...",
                     percent=90,
                 ))
@@ -284,11 +245,12 @@ class RestoreManager:
     # ------------------------------------------------------------------
     def restore_contacts(self, serial: str, backup_id: str) -> bool:
         """Restore contacts backup (supports VCF and .ab formats)."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         folder = self.backup_dir / backup_id
         success = False
 
-        self._emit(BackupProgress(phase="restoring_contacts", current_item="Restoring contacts..."))
+        self._emit(BackupProgress(phase="restoring_contacts", sub_phase="contacts",
+                                  current_item="Restoring contacts..."))
 
         # --- Strategy 1: VCF file → push to device and import ---
         contacts_vcf = folder / "contacts.vcf"
@@ -360,12 +322,13 @@ class RestoreManager:
 
     def restore_sms(self, serial: str, backup_id: str) -> bool:
         """Restore SMS backup (supports JSON and .ab formats)."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         folder = self.backup_dir / backup_id
         success = False
         restored_count = 0
 
-        self._emit(BackupProgress(phase="restoring_sms", current_item="Restoring messages..."))
+        self._emit(BackupProgress(phase="restoring_sms", sub_phase="sms",
+                                  current_item="Restoring messages..."))
 
         # --- Strategy 1: JSON file → content insert via content provider ---
         sms_json = folder / "sms_backup.json"
@@ -483,7 +446,7 @@ class RestoreManager:
         restore_apk: bool = True,
     ) -> bool:
         """Restore messaging app data from a messaging backup."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         messaging_dir = self.backup_dir / backup_id / "messaging"
 
         if not messaging_dir.exists():
@@ -501,6 +464,7 @@ class RestoreManager:
 
         self._emit(BackupProgress(
             phase="restoring_messaging",
+            sub_phase="messaging",
             current_item="Restaurando apps de mensagem...",
             items_total=total,
         ))
@@ -513,10 +477,11 @@ class RestoreManager:
             app_key = app_dir.name
             self._emit(BackupProgress(
                 phase="restoring_messaging",
+                sub_phase="messaging",
                 current_item=f"Restaurando {app_key}...",
                 items_done=i,
                 items_total=total,
-                percent=(i / total * 100) if total > 0 else 0,
+                percent=safe_percent(i, total),
             ))
 
             try:
@@ -572,7 +537,7 @@ class RestoreManager:
         target_paths: Optional[List[str]] = None,
     ) -> bool:
         """Restore files from a custom-path backup."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         files_dir = self.backup_dir / backup_id / "files"
 
         if not files_dir.exists():
@@ -590,36 +555,16 @@ class RestoreManager:
                 else:
                     files_to_restore.append((local_file, remote))
 
-        total = len(files_to_restore)
-        total_bytes = sum(f[0].stat().st_size for f in files_to_restore)
-        bytes_done = 0
+        if not files_to_restore:
+            self._emit(BackupProgress(phase="complete", percent=100))
+            return True
 
-        self._emit(BackupProgress(
+        success_count, _ = self.push_with_progress(
+            serial, files_to_restore,
             phase="restoring_custom",
-            items_total=total,
-            bytes_total=total_bytes,
-        ))
-
-        success_count = 0
-        for i, (local, remote) in enumerate(files_to_restore):
-            if self._cancel_flag.is_set():
-                break
-            fsize = local.stat().st_size
-            remote_dir = os.path.dirname(remote)
-            self.adb.run_shell(f"mkdir -p '{remote_dir}'", serial)
-            if self.adb.push(str(local), remote, serial):
-                success_count += 1
-            bytes_done += fsize
-            pct = (bytes_done / total_bytes * 100) if total_bytes > 0 else 0
-            self._emit(BackupProgress(
-                phase="restoring_custom",
-                current_item=os.path.basename(str(local)),
-                items_done=i + 1,
-                items_total=total,
-                bytes_done=bytes_done,
-                bytes_total=total_bytes,
-                percent=pct,
-            ))
+            sub_phase="custom_files",
+        )
+        total = len(files_to_restore)
 
         self._emit(BackupProgress(phase="complete", percent=100))
         log.info("Custom restore: %d/%d files", success_count, total)
@@ -641,7 +586,7 @@ class RestoreManager:
           2. Push data back to /sdcard/Android/data|media/<pkg>
           3. Attempt ADB restore from .ab file (if present)
         """
-        self._cancel_flag.clear()
+        self._begin_operation()
         unsynced_dir = self.backup_dir / backup_id / "unsynced"
 
         if not unsynced_dir.exists():
@@ -658,6 +603,7 @@ class RestoreManager:
 
         self._emit(BackupProgress(
             phase="restoring_unsynced",
+            sub_phase="unsynced",
             items_total=total,
             current_item=f"Restaurando {total} app(s)...",
         ))
@@ -669,10 +615,11 @@ class RestoreManager:
             pkg = pkg_dir.name
             self._emit(BackupProgress(
                 phase="restoring_unsynced",
+                sub_phase="unsynced",
                 current_item=f"📦 {pkg}",
                 items_done=idx,
                 items_total=total,
-                percent=int(idx / total * 100) if total else 0,
+                percent=safe_percent(idx, total),
             ))
 
             ok = True

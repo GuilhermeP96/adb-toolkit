@@ -26,6 +26,13 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .adb_core import ADBCore, DeviceInfo
+from .adb_base import (
+    ADBManagerBase,
+    OperationProgress,
+    safe_percent,
+    CACHE_PATTERNS,
+    THUMBNAIL_DUMP_PATTERNS,
+)
 
 log = logging.getLogger("adb_toolkit.backup")
 
@@ -91,46 +98,21 @@ class BackupManifest:
 
 
 # ---------------------------------------------------------------------------
-# Backup progress
+# Backward-compatible alias
 # ---------------------------------------------------------------------------
-@dataclass
-class BackupProgress:
-    phase: str = ""
-    current_item: str = ""
-    items_done: int = 0
-    items_total: int = 0
-    bytes_done: int = 0
-    bytes_total: int = 0
-    percent: float = 0.0
-    speed_bps: float = 0.0
-    eta_seconds: float = 0.0
+BackupProgress = OperationProgress
 
 
 # ---------------------------------------------------------------------------
 # Backup Manager
 # ---------------------------------------------------------------------------
-class BackupManager:
+class BackupManager(ADBManagerBase):
     """Manages device backups via ADB."""
 
     def __init__(self, adb: ADBCore, backup_dir: Optional[Path] = None):
-        self.adb = adb
+        super().__init__(adb)
         self.backup_dir = backup_dir or (adb.base_dir / "backups")
         self.backup_dir.mkdir(parents=True, exist_ok=True)
-        self._cancel_flag = threading.Event()
-        self._progress_cb: Optional[Callable[[BackupProgress], None]] = None
-
-    def set_progress_callback(self, cb: Callable[[BackupProgress], None]):
-        self._progress_cb = cb
-
-    def cancel(self):
-        self._cancel_flag.set()
-
-    def _emit(self, progress: BackupProgress):
-        if self._progress_cb:
-            try:
-                self._progress_cb(progress)
-            except Exception:
-                pass
 
     # ------------------------------------------------------------------
     # Backup directory management
@@ -187,12 +169,11 @@ class BackupManager:
         password: Optional[str] = None,
     ) -> Optional[BackupManifest]:
         """Perform a full ADB backup (adb backup command)."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         device = self.adb.get_device_details(serial)
         folder, backup_id = self._create_backup_folder(device, "full")
         backup_file = folder / "backup.ab"
 
-        start_time = time.time()
         self._emit(BackupProgress(phase="full_backup", current_item="Starting full backup..."))
 
         args = ["backup", "-all"]
@@ -224,7 +205,7 @@ class BackupManager:
             shutil.rmtree(folder, ignore_errors=True)
             return None
 
-        duration = time.time() - start_time
+        duration = time.time() - self._start_time
         size = backup_file.stat().st_size if backup_file.exists() else 0
 
         manifest = BackupManifest(
@@ -255,13 +236,14 @@ class BackupManager:
         serial: str,
         categories: Optional[List[str]] = None,
         custom_paths: Optional[List[str]] = None,
+        ignore_cache: bool = False,
+        ignore_thumbnails: bool = False,
     ) -> Optional[BackupManifest]:
         """Backup files from device by category or custom paths."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         device = self.adb.get_device_details(serial)
         folder, backup_id = self._create_backup_folder(device, "files")
 
-        start_time = time.time()
         categories = categories or ["photos", "videos", "music", "documents"]
         all_paths: List[str] = []
 
@@ -274,72 +256,25 @@ class BackupManager:
         # Deduplicate
         all_paths = list(dict.fromkeys(all_paths))
 
-        total_files = 0
-        total_bytes = 0
-        file_count = 0
-
-        # Count files first
-        self._emit(BackupProgress(phase="scanning", current_item="Scanning device files..."))
-        file_list: List[Tuple[str, int]] = []
-
-        for rpath in all_paths:
-            if self._cancel_flag.is_set():
-                break
-            try:
-                out = self.adb.run_shell(
-                    f'find {rpath} -type f 2>/dev/null | xargs stat -c "%n|%s" 2>/dev/null',
-                    serial,
-                    timeout=180,
-                )
-                for line in out.splitlines():
-                    if "|" in line:
-                        parts = line.rsplit("|", 1)
-                        fname = parts[0]
-                        try:
-                            fsize = int(parts[1])
-                        except ValueError:
-                            fsize = 0
-                        file_list.append((fname, fsize))
-                        total_bytes += fsize
-            except Exception as exc:
-                log.warning("Error scanning %s: %s", rpath, exc)
-
+        # Scan files (with optional cache/thumbnail filtering)
+        self._emit(BackupProgress(phase="scanning", sub_phase="files",
+                                  current_item="Scanning device files..."))
+        file_list = self.list_remote_files(
+            serial, all_paths,
+            ignore_cache=ignore_cache,
+            ignore_thumbnails=ignore_thumbnails,
+        )
         total_files = len(file_list)
+        total_bytes = sum(s for _, s in file_list)
         log.info("Found %d files (%d bytes) to backup", total_files, total_bytes)
 
-        # Pull files
-        self._emit(BackupProgress(
-            phase="copying",
-            items_total=total_files,
-            bytes_total=total_bytes,
-        ))
+        # Pull files using shared helper
+        file_count, bytes_done = self.pull_with_progress(
+            serial, file_list, folder / "files",
+            phase="copying", sub_phase="files",
+        )
 
-        bytes_done = 0
-        for i, (fpath, fsize) in enumerate(file_list):
-            if self._cancel_flag.is_set():
-                break
-
-            # Create local directory structure
-            rel = fpath.lstrip("/")
-            local_path = folder / "files" / rel
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-
-            self.adb.pull(fpath, str(local_path), serial)
-            file_count += 1
-            bytes_done += fsize
-
-            pct = (bytes_done / total_bytes * 100) if total_bytes > 0 else 0
-            self._emit(BackupProgress(
-                phase="copying",
-                current_item=os.path.basename(fpath),
-                items_done=file_count,
-                items_total=total_files,
-                bytes_done=bytes_done,
-                bytes_total=total_bytes,
-                percent=pct,
-            ))
-
-        duration = time.time() - start_time
+        duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
 
         manifest = BackupManifest(
@@ -374,13 +309,11 @@ class BackupManager:
         selected_packages: Optional[List[str]] = None,
     ) -> Optional[BackupManifest]:
         """Backup installed APKs (and optionally data)."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         device = self.adb.get_device_details(serial)
         folder, backup_id = self._create_backup_folder(device, "apps")
         apk_dir = folder / "apks"
         apk_dir.mkdir(exist_ok=True)
-
-        start_time = time.time()
 
         if selected_packages:
             packages = selected_packages
@@ -436,7 +369,7 @@ class BackupManager:
             data_args.extend(["-f", str(data_backup)])
             self.adb.run(data_args, serial=serial, timeout=3600)
 
-        duration = time.time() - start_time
+        duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
 
         manifest = BackupManifest(
@@ -470,12 +403,12 @@ class BackupManager:
           2. Use `adb backup` for contacts provider
           3. Pull contacts DB directly (needs root — usually fails)
         """
-        self._cancel_flag.clear()
+        self._begin_operation()
         device = self.adb.get_device_details(serial)
         folder, backup_id = self._create_backup_folder(device, "contacts")
 
-        start_time = time.time()
-        self._emit(BackupProgress(phase="contacts", current_item="Exportando contatos..."))
+        self._emit(BackupProgress(phase="contacts", sub_phase="contacts",
+                                  current_item="Exportando contatos..."))
 
         file_count = 0
         methods_tried = []
@@ -572,7 +505,7 @@ class BackupManager:
         except Exception:
             log.debug("Direct contacts DB pull failed (expected without root)")
 
-        duration = time.time() - start_time
+        duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
 
         manifest = BackupManifest(
@@ -608,12 +541,12 @@ class BackupManager:
           2. Use `adb backup` for telephony provider
           3. Pull SMS DB directly (needs root)
         """
-        self._cancel_flag.clear()
+        self._begin_operation()
         device = self.adb.get_device_details(serial)
         folder, backup_id = self._create_backup_folder(device, "sms")
 
-        start_time = time.time()
-        self._emit(BackupProgress(phase="sms", current_item="Exportando mensagens..."))
+        self._emit(BackupProgress(phase="sms", sub_phase="sms",
+                                  current_item="Exportando mensagens..."))
 
         file_count = 0
         sms_count = 0
@@ -721,7 +654,7 @@ class BackupManager:
         except Exception:
             log.debug("Direct SMS DB pull failed (expected without root)")
 
-        duration = time.time() - start_time
+        duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
 
         manifest = BackupManifest(
@@ -767,12 +700,12 @@ class BackupManager:
         """
         from .device_explorer import MESSAGING_APPS, MessagingAppDetector
 
-        self._cancel_flag.clear()
+        self._begin_operation()
         device = self.adb.get_device_details(serial)
         folder, backup_id = self._create_backup_folder(device, "messaging")
 
-        start_time = time.time()
-        self._emit(BackupProgress(phase="messaging", current_item="Detectando apps de mensagem..."))
+        self._emit(BackupProgress(phase="messaging", sub_phase="messaging",
+                                  current_item="Detectando apps de mensagem..."))
 
         detector = MessagingAppDetector(self.adb)
         installed = detector.detect_installed_apps(serial)
@@ -816,39 +749,24 @@ class BackupManager:
             app_folder.mkdir(parents=True, exist_ok=True)
 
             # 1. Backup media paths (accessible without root)
-            for media_path in existing_paths:
-                if self._cancel_flag.is_set():
-                    break
-                try:
-                    # Collect file listing
-                    out = self.adb.run_shell(
-                        f'find "{media_path}" -type f 2>/dev/null | xargs stat -c "%n|%s" 2>/dev/null',
-                        serial,
-                        timeout=300,
-                    )
-                    files = []
-                    for line in out.splitlines():
-                        if "|" in line:
-                            parts = line.rsplit("|", 1)
-                            fname = parts[0]
-                            try:
-                                fsize = int(parts[1])
-                            except ValueError:
-                                fsize = 0
-                            files.append((fname, fsize))
-
-                    for fpath, fsize in files:
-                        if self._cancel_flag.is_set():
-                            break
-                        rel = fpath.lstrip("/")
-                        local_path = app_folder / "media" / rel
-                        local_path.parent.mkdir(parents=True, exist_ok=True)
+            if existing_paths:
+                media_files = self.list_remote_files(
+                    serial, existing_paths,
+                    ignore_cache=True,
+                    timeout=300,
+                )
+                for fpath, fsize in media_files:
+                    if self._is_cancelled():
+                        break
+                    rel = fpath.lstrip("/")
+                    local_path = app_folder / "media" / rel
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
                         self.adb.pull(fpath, str(local_path), serial)
                         total_files += 1
                         total_bytes += fsize
-
-                except Exception as exc:
-                    log.warning("Error backing up %s path %s: %s", app_name, media_path, exc)
+                    except Exception as exc:
+                        log.warning("Error pulling %s: %s", fpath, exc)
 
             # 2. Backup APK if requested
             if include_apk:
@@ -889,7 +807,7 @@ class BackupManager:
                 encoding="utf-8",
             )
 
-        duration = time.time() - start_time
+        duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
 
         manifest = BackupManifest(
@@ -935,11 +853,10 @@ class BackupManager:
         if not packages:
             return None
 
-        self._cancel_flag.clear()
+        self._begin_operation()
         device = self.adb.get_device_details(serial)
         folder, backup_id = self._create_backup_folder(device, "unsynced_apps")
 
-        start_time = time.time()
         total_pkgs = len(packages)
         backed_up: List[str] = []
         total_files = 0
@@ -981,6 +898,7 @@ class BackupManager:
                     log.debug("APK backup failed for %s: %s", pkg, exc)
 
             # 2. Backup accessible data directories
+            data_dirs: List[str] = []
             for base_dir in ("/sdcard/Android/data", "/sdcard/Android/media"):
                 data_path = f"{base_dir}/{pkg}"
                 try:
@@ -988,38 +906,27 @@ class BackupManager:
                         f'test -d "{data_path}" && echo yes',
                         serial, timeout=5,
                     )
-                    if "yes" not in check:
-                        continue
+                    if "yes" in check:
+                        data_dirs.append(data_path)
+                except Exception:
+                    pass
 
-                    out = self.adb.run_shell(
-                        f'find "{data_path}" -type f 2>/dev/null | xargs stat -c "%n|%s" 2>/dev/null',
-                        serial, timeout=180,
-                    )
-                    files = []
-                    for line in out.splitlines():
-                        if "|" in line:
-                            parts = line.rsplit("|", 1)
-                            try:
-                                fsize = int(parts[1])
-                            except ValueError:
-                                fsize = 0
-                            files.append((parts[0], fsize))
-
-                    for fpath, fsize in files:
-                        if self._cancel_flag.is_set():
-                            break
-                        rel = fpath.lstrip("/")
-                        local_path = pkg_folder / "data" / rel
-                        local_path.parent.mkdir(parents=True, exist_ok=True)
-                        try:
-                            self.adb.pull(fpath, str(local_path), serial)
-                            pkg_files += 1
-                            total_bytes += fsize
-                        except Exception:
-                            pass
-
-                except Exception as exc:
-                    log.debug("Data backup for %s in %s failed: %s", pkg, base_dir, exc)
+            if data_dirs:
+                data_files = self.list_remote_files(
+                    serial, data_dirs, ignore_cache=True,
+                )
+                for fpath, fsize in data_files:
+                    if self._is_cancelled():
+                        break
+                    rel = fpath.lstrip("/")
+                    local_path = pkg_folder / "data" / rel
+                    local_path.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        self.adb.pull(fpath, str(local_path), serial)
+                        pkg_files += 1
+                        total_bytes += fsize
+                    except Exception:
+                        pass
 
             # 3. ADB backup (app internal data — may require confirmation)
             try:
@@ -1045,7 +952,7 @@ class BackupManager:
                 encoding="utf-8",
             )
 
-        duration = time.time() - start_time
+        duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
 
         manifest = BackupManifest(
@@ -1078,90 +985,62 @@ class BackupManager:
         self,
         serial: str,
         remote_paths: List[str],
+        ignore_cache: bool = False,
+        ignore_thumbnails: bool = False,
     ) -> Optional[BackupManifest]:
         """Backup specific paths selected by the user in the file tree browser."""
-        self._cancel_flag.clear()
+        self._begin_operation()
         device = self.adb.get_device_details(serial)
         folder, backup_id = self._create_backup_folder(device, "custom")
 
-        start_time = time.time()
-        self._emit(BackupProgress(phase="custom", current_item="Escaneando caminhos selecionados..."))
+        self._emit(BackupProgress(phase="custom", sub_phase="custom",
+                                  current_item="Escaneando caminhos selecionados..."))
 
-        # Determine which selected paths are files vs dirs
-        all_files: List[Tuple[str, int]] = []
+        # Separate files vs directories for scanning
+        dir_paths: List[str] = []
+        single_files: List[Tuple[str, int]] = []
 
         for rpath in remote_paths:
-            if self._cancel_flag.is_set():
+            if self._is_cancelled():
                 break
             try:
-                # Check if it's a directory
-                check = self.adb.run_shell(f'test -d "{rpath}" && echo DIR || echo FILE', serial, timeout=5)
+                check = self.adb.run_shell(
+                    f'test -d "{rpath}" && echo DIR || echo FILE', serial, timeout=5,
+                )
                 if "DIR" in check:
-                    # Enumerate files recursively
-                    out = self.adb.run_shell(
-                        f'find "{rpath}" -type f 2>/dev/null | xargs stat -c "%n|%s" 2>/dev/null',
-                        serial,
-                        timeout=180,
-                    )
-                    for line in out.splitlines():
-                        if "|" in line:
-                            parts = line.rsplit("|", 1)
-                            fname = parts[0]
-                            try:
-                                fsize = int(parts[1])
-                            except ValueError:
-                                fsize = 0
-                            all_files.append((fname, fsize))
+                    dir_paths.append(rpath)
                 else:
-                    # Single file — get size
-                    out = self.adb.run_shell(f'stat -c "%s" "{rpath}" 2>/dev/null', serial, timeout=5)
+                    out = self.adb.run_shell(
+                        f'stat -c "%s" "{rpath}" 2>/dev/null', serial, timeout=5,
+                    )
                     try:
                         fsize = int(out.strip())
                     except ValueError:
                         fsize = 0
-                    all_files.append((rpath, fsize))
+                    single_files.append((rpath, fsize))
             except Exception as exc:
                 log.warning("Error scanning path %s: %s", rpath, exc)
 
+        # List directory contents using shared helper (with filters)
+        all_files = self.list_remote_files(
+            serial, dir_paths,
+            ignore_cache=ignore_cache,
+            ignore_thumbnails=ignore_thumbnails,
+        )
+        all_files.extend(single_files)
+
         total_files = len(all_files)
         total_bytes = sum(s for _, s in all_files)
-
         log.info("Custom backup: %d files (%d bytes) from %d selected paths",
                  total_files, total_bytes, len(remote_paths))
 
-        self._emit(BackupProgress(
-            phase="custom",
-            current_item="Copiando arquivos...",
-            items_total=total_files,
-            bytes_total=total_bytes,
-        ))
+        # Pull using shared helper
+        file_count, bytes_done = self.pull_with_progress(
+            serial, all_files, folder / "files",
+            phase="custom", sub_phase="custom",
+        )
 
-        file_count = 0
-        bytes_done = 0
-        for fpath, fsize in all_files:
-            if self._cancel_flag.is_set():
-                break
-
-            rel = fpath.lstrip("/")
-            local_path = folder / "files" / rel
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-
-            self.adb.pull(fpath, str(local_path), serial)
-            file_count += 1
-            bytes_done += fsize
-
-            pct = (bytes_done / total_bytes * 100) if total_bytes > 0 else 0
-            self._emit(BackupProgress(
-                phase="custom",
-                current_item=os.path.basename(fpath),
-                items_done=file_count,
-                items_total=total_files,
-                bytes_done=bytes_done,
-                bytes_total=total_bytes,
-                percent=pct,
-            ))
-
-        duration = time.time() - start_time
+        duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
 
         manifest = BackupManifest(
