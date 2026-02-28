@@ -5,6 +5,7 @@ __pycache__/
 
 # Platform tools (downloaded)
 platform-tools/
+platform-tools.zip
 
 # Drivers (downloaded)
 drivers/
@@ -15,11 +16,17 @@ backups/
 # Transfers (temp)
 transfers/
 
+# Toolbox output (screenshots, recordings)
+toolbox_output/
+
 # Logs
 logs/
 
 # Config (user-specific)
 config.json
+
+# Temp scripts
+_tmp_*
 
 # IDE
 .vscode/
