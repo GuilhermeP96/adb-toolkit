@@ -1,0 +1,11 @@
+customtkinter>=5.2.0
+Pillow>=10.0.0
+
+# GPU acceleration (optional - auto-detects and falls back to CPU)
+# Intel GPU:
+pyopencl>=2024.0
+# NVIDIA GPU (uncomment if needed):
+# cupy-cuda12x>=13.0
+# Intel oneAPI (alternative to OpenCL, uncomment if needed):
+# dpctl>=0.17
+# dpnp>=0.16

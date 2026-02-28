@@ -1,0 +1,33 @@
+# ADB Toolkit - Byte-compiled / cached files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Platform tools (downloaded)
+platform-tools/
+
+# Drivers (downloaded)
+drivers/
+
+# Backups (user data)
+backups/
+
+# Transfers (temp)
+transfers/
+
+# Logs
+logs/
+
+# Config (user-specific)
+config.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
