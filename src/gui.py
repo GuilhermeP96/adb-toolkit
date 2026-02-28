@@ -7,6 +7,7 @@ Tabs: Devices | Backup | Restore | Transfer | Drivers | Settings
 
 import logging
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -1027,6 +1028,16 @@ class ADBToolkitApp(ctk.CTk):
             command=self._tb_toggle_show_touches,
         ).pack(side="left", padx=16)
 
+        dev_btns2 = ctk.CTkFrame(scroll, fg_color="transparent")
+        dev_btns2.pack(fill="x", padx=16, pady=4)
+
+        self.btn_tb_shell = ctk.CTkButton(
+            dev_btns2, text="💻 Abrir Shell (ADB)",
+            command=self._tb_open_shell, width=180,
+            fg_color=COLORS["success"], hover_color="#05c090",
+        )
+        self.btn_tb_shell.pack(side="left", padx=4)
+
         # ── Reboot section ──
         self._tb_section(scroll, "🔄 Reiniciar Dispositivo")
 
@@ -1502,6 +1513,27 @@ class ADBToolkitApp(ctk.CTk):
             self._tb_write(f"👆 Mostrar toques: {state}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_open_shell(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        adb = self.adb.adb_path
+        if not adb:
+            self._tb_write("⚠️ Caminho do ADB não configurado.", clear=True)
+            return
+        cmd = [adb, "-s", serial, "shell"]
+        try:
+            subprocess.Popen(
+                ["cmd", "/c", "start", "cmd", "/k"] + cmd,
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+            self._tb_write(
+                f"💻 Shell ADB aberto para {serial} em nova janela.",
+                clear=True,
+            )
+        except Exception as exc:
+            self._tb_write(f"Erro ao abrir shell: {exc}", clear=True)
 
     # -- Reboot callbacks ----------------------------------------------------
     def _tb_reboot_normal(self):
