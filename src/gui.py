@@ -22,6 +22,10 @@ from .adb_core import ADBCore, DeviceInfo
 from .backup_manager import BackupManager, BackupProgress, BACKUP_TYPES, MEDIA_PATHS
 from .restore_manager import RestoreManager
 from .transfer_manager import TransferManager, TransferConfig, TransferProgress
+from .cleanup_manager import (
+    CleanupManager, CleanupMode, ModeEstimate, ModeProgress, ModeResult,
+    MODE_LABELS, MODE_DESCRIPTIONS, MODE_ORDER,
+)
 from .driver_manager import DriverManager, DriverStatus
 from .device_explorer import (
     DeviceTreeBrowser, MessagingAppDetector, AndroidPathResolver, MESSAGING_APPS,
@@ -75,6 +79,7 @@ class ADBToolkitApp(ctk.CTk):
         self.backup_mgr = BackupManager(adb)
         self.restore_mgr = RestoreManager(adb)
         self.transfer_mgr = TransferManager(adb)
+        self.cleanup_mgr = CleanupManager(adb)
         self.driver_mgr = DriverManager(adb.base_dir)
 
         # Cross-platform device manager
@@ -123,6 +128,7 @@ class ADBToolkitApp(ctk.CTk):
         self.tabview.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         self._tab_devices = self.tabview.add("📱 Dispositivos")
+        self._tab_cleanup = self.tabview.add("🧹 Limpeza")
         self._tab_backup = self.tabview.add("💾 Backup")
         self._tab_restore = self.tabview.add("♻️ Restaurar")
         self._tab_transfer = self.tabview.add("🔄 Transferir")
@@ -130,6 +136,7 @@ class ADBToolkitApp(ctk.CTk):
         self._tab_settings = self.tabview.add("⚙️ Configurações")
 
         self._build_devices_tab()
+        self._build_cleanup_tab()
         self._build_backup_tab()
         self._build_restore_tab()
         self._build_transfer_tab()
@@ -362,6 +369,403 @@ class ADBToolkitApp(ctk.CTk):
         self.device_details_text.pack(fill="x", padx=8, pady=(0, 8))
         self.device_details_text.insert("end", "Selecione um dispositivo acima.")
         self.device_details_text.configure(state="disabled")
+
+    # ==================================================================
+    # CLEANUP TAB
+    # ==================================================================
+    def _build_cleanup_tab(self):
+        tab = self._tab_cleanup
+
+        cleanup_scroll = ctk.CTkScrollableFrame(tab)
+        cleanup_scroll.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # Header
+        header = ctk.CTkFrame(cleanup_scroll)
+        header.pack(fill="x", padx=4, pady=4)
+
+        ctk.CTkLabel(
+            header, text="🧹 Limpeza do Dispositivo",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 2))
+
+        ctk.CTkLabel(
+            header,
+            text="Selecione os modos de limpeza, escaneie para revisar e confirme a execução.",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        # ------ Per-mode rows ------
+        self._cleanup_mode_vars: Dict[CleanupMode, ctk.BooleanVar] = {}
+        self._cleanup_mode_rows: Dict[CleanupMode, Dict] = {}
+
+        modes_frame = ctk.CTkFrame(cleanup_scroll)
+        modes_frame.pack(fill="x", padx=4, pady=4)
+
+        for mode in MODE_ORDER:
+            self._build_cleanup_mode_row(modes_frame, mode)
+
+        # ------ Action buttons ------
+        btn_frame = ctk.CTkFrame(cleanup_scroll)
+        btn_frame.pack(fill="x", padx=4, pady=4)
+
+        btn_row = ctk.CTkFrame(btn_frame, fg_color="transparent")
+        btn_row.pack(fill="x", padx=12, pady=8)
+
+        self.btn_scan_cleanup = ctk.CTkButton(
+            btn_row, text="🔍 Escanear e Estimar",
+            command=self._start_cleanup_scan,
+            fg_color=COLORS["card"], hover_color=COLORS["accent"],
+            width=200,
+        )
+        self.btn_scan_cleanup.pack(side="left", padx=(0, 8))
+
+        self.btn_execute_cleanup = ctk.CTkButton(
+            btn_row, text="🧹 Limpar Agora",
+            command=self._start_cleanup_execute,
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            width=200, state="disabled",
+        )
+        self.btn_execute_cleanup.pack(side="left", padx=(0, 8))
+
+        self.btn_cancel_cleanup = ctk.CTkButton(
+            btn_row, text="❌ Cancelar",
+            command=self._cancel_cleanup,
+            fg_color=COLORS["error"], hover_color="#c0392b",
+            width=120, state="disabled",
+        )
+        self.btn_cancel_cleanup.pack(side="left")
+
+        # ------ Summary panel ------
+        summary_frame = ctk.CTkFrame(cleanup_scroll)
+        summary_frame.pack(fill="x", padx=4, pady=4)
+
+        ctk.CTkLabel(
+            summary_frame, text="Resumo da Verificação",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 4))
+
+        self.cleanup_summary_text = ctk.CTkTextbox(summary_frame, height=150)
+        self.cleanup_summary_text.pack(fill="x", padx=8, pady=(0, 8))
+        self.cleanup_summary_text.insert("end", "Clique em 'Escanear e Estimar' para iniciar.")
+        self.cleanup_summary_text.configure(state="disabled")
+
+        # State
+        self._cleanup_estimates: Dict[CleanupMode, ModeEstimate] = {}
+
+    def _build_cleanup_mode_row(self, parent: ctk.CTkFrame, mode: CleanupMode):
+        """Build one row with toggle, label, description, and progress bar."""
+        row = ctk.CTkFrame(parent, corner_radius=8)
+        row.pack(fill="x", padx=8, pady=3)
+        row.columnconfigure(1, weight=1)
+
+        # Enable toggle
+        var = ctk.BooleanVar(value=mode != CleanupMode.DUPLICATES)
+        self._cleanup_mode_vars[mode] = var
+
+        chk = ctk.CTkCheckBox(
+            row, text="", variable=var, width=24,
+            checkbox_width=20, checkbox_height=20,
+        )
+        chk.grid(row=0, column=0, padx=(8, 4), pady=8, sticky="w")
+
+        # Label + description
+        info_frame = ctk.CTkFrame(row, fg_color="transparent")
+        info_frame.grid(row=0, column=1, sticky="ew", padx=4, pady=4)
+
+        label_text = MODE_LABELS[mode]
+        if mode == CleanupMode.DUPLICATES:
+            label_text += "  ⚠️ (recomendado após demais limpezas)"
+
+        ctk.CTkLabel(
+            info_frame, text=label_text,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            anchor="w",
+        ).pack(anchor="w")
+
+        ctk.CTkLabel(
+            info_frame, text=MODE_DESCRIPTIONS[mode],
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"], anchor="w",
+        ).pack(anchor="w")
+
+        # Status label (estimate result / cleaning status)
+        status_lbl = ctk.CTkLabel(
+            row, text="—", width=180, anchor="e",
+            font=ctk.CTkFont(size=12),
+            text_color=COLORS["text_dim"],
+        )
+        status_lbl.grid(row=0, column=2, padx=8, pady=8, sticky="e")
+
+        # Progress bar
+        progress_bar = ctk.CTkProgressBar(row, height=6)
+        progress_bar.grid(row=1, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 6))
+        progress_bar.set(0)
+
+        # Detail label under progress
+        detail_lbl = ctk.CTkLabel(
+            row, text="", anchor="w",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_dim"],
+        )
+        detail_lbl.grid(row=2, column=0, columnspan=3, sticky="ew", padx=12, pady=(0, 4))
+
+        self._cleanup_mode_rows[mode] = {
+            "row": row,
+            "checkbox": chk,
+            "status_lbl": status_lbl,
+            "progress_bar": progress_bar,
+            "detail_lbl": detail_lbl,
+        }
+
+    # ------------------------------------------------------------------
+    # Cleanup operations
+    # ------------------------------------------------------------------
+
+    def _get_enabled_cleanup_modes(self) -> List[CleanupMode]:
+        """Return enabled cleanup modes in execution order."""
+        return [m for m in MODE_ORDER if self._cleanup_mode_vars.get(m, ctk.BooleanVar()).get()]
+
+    def _start_cleanup_scan(self):
+        serial = self._get_selected_device()
+        if not serial:
+            return
+
+        modes = self._get_enabled_cleanup_modes()
+        if not modes:
+            messagebox.showwarning("Limpeza", "Selecione ao menos um modo de limpeza.")
+            return
+
+        self._lock_ui()
+        self.btn_cancel_cleanup.configure(state="normal")
+        self.btn_execute_cleanup.configure(state="disabled")
+        self._cleanup_estimates.clear()
+
+        # Reset all rows
+        for mode in MODE_ORDER:
+            widgets = self._cleanup_mode_rows[mode]
+            widgets["status_lbl"].configure(text="—", text_color=COLORS["text_dim"])
+            widgets["progress_bar"].set(0)
+            widgets["detail_lbl"].configure(text="")
+
+        # Register per-mode progress callbacks
+        for mode in modes:
+            self.cleanup_mgr.set_mode_progress_callback(
+                mode, lambda p, _m=mode: self._on_cleanup_mode_progress(p),
+            )
+
+        self._set_status("Escaneando dispositivo…")
+        self.cleanup_summary_text.configure(state="normal")
+        self.cleanup_summary_text.delete("1.0", "end")
+        self.cleanup_summary_text.insert("end", "⏳ Escaneando…\n")
+        self.cleanup_summary_text.configure(state="disabled")
+
+        def _run():
+            try:
+                self.cleanup_mgr.reset()
+                estimates = self.cleanup_mgr.estimate(serial, modes)
+                self._safe_after(0, lambda: self._scan_finished(estimates))
+            except Exception as exc:
+                log.exception("Scan error: %s", exc)
+                self._safe_after(0, lambda: self._scan_error(str(exc)))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_cleanup_mode_progress(self, p: ModeProgress):
+        def _update():
+            if self._closing:
+                return
+            widgets = self._cleanup_mode_rows.get(p.mode)
+            if not widgets:
+                return
+            try:
+                widgets["progress_bar"].set(p.percent / 100)
+                widgets["detail_lbl"].configure(text=p.message)
+                if p.phase == "complete":
+                    widgets["status_lbl"].configure(
+                        text=p.message, text_color=COLORS["success"],
+                    )
+                elif p.phase == "error":
+                    widgets["status_lbl"].configure(
+                        text="Erro", text_color=COLORS["error"],
+                    )
+                elif p.phase == "cleaning":
+                    if p.bytes_freed > 0:
+                        widgets["status_lbl"].configure(
+                            text=f"{format_bytes(p.bytes_freed)} liberados",
+                            text_color=COLORS["warning"],
+                        )
+            except Exception:
+                pass
+        self._safe_after(0, _update)
+
+    def _scan_finished(self, estimates: Dict[CleanupMode, ModeEstimate]):
+        self._cleanup_estimates = estimates
+        self._unlock_ui()
+        self.btn_cancel_cleanup.configure(state="disabled")
+
+        # Build summary text
+        total_items = 0
+        total_bytes = 0
+        lines = ["📊 RESULTADO DA VERIFICAÇÃO\n", "=" * 50 + "\n\n"]
+
+        for mode in MODE_ORDER:
+            est = estimates.get(mode)
+            if est is None:
+                continue
+            label = MODE_LABELS[mode]
+            if est.error:
+                lines.append(f"  ❌ {label}: {est.error}\n")
+                widgets = self._cleanup_mode_rows[mode]
+                widgets["status_lbl"].configure(text="Erro", text_color=COLORS["error"])
+            else:
+                lines.append(
+                    f"  {'✅' if est.total_items else '⭕'} {label}: "
+                    f"{est.total_items} itens  •  {format_bytes(est.total_bytes)}\n"
+                )
+                total_items += est.total_items
+                total_bytes += est.total_bytes
+
+                widgets = self._cleanup_mode_rows[mode]
+                if est.total_items:
+                    widgets["status_lbl"].configure(
+                        text=f"{est.total_items} itens ({format_bytes(est.total_bytes)})",
+                        text_color=COLORS["warning"],
+                    )
+                else:
+                    widgets["status_lbl"].configure(
+                        text="Limpo ✓", text_color=COLORS["success"],
+                    )
+
+        lines.append(f"\n{'=' * 50}\n")
+        lines.append(f"  TOTAL: {total_items} itens  •  ~{format_bytes(total_bytes)} a liberar\n")
+
+        if total_items > 0:
+            lines.append("\n  👉 Clique em 'Limpar Agora' para executar a limpeza.\n")
+            self.btn_execute_cleanup.configure(state="normal")
+        else:
+            lines.append("\n  ✅ Nenhum item para limpar. Dispositivo já está limpo!\n")
+
+        self.cleanup_summary_text.configure(state="normal")
+        self.cleanup_summary_text.delete("1.0", "end")
+        self.cleanup_summary_text.insert("end", "".join(lines))
+        self.cleanup_summary_text.configure(state="disabled")
+        self._set_status(f"Verificação concluída — {total_items} itens ({format_bytes(total_bytes)})")
+
+    def _scan_error(self, error: str):
+        self._unlock_ui()
+        self.btn_cancel_cleanup.configure(state="disabled")
+        self.cleanup_summary_text.configure(state="normal")
+        self.cleanup_summary_text.delete("1.0", "end")
+        self.cleanup_summary_text.insert("end", f"❌ Erro durante verificação:\n{error}")
+        self.cleanup_summary_text.configure(state="disabled")
+        self._set_status("Erro na verificação")
+
+    def _start_cleanup_execute(self):
+        if not self._cleanup_estimates:
+            return
+
+        serial = self._get_selected_device()
+        if not serial:
+            return
+
+        # Confirm
+        total_items = sum(e.total_items for e in self._cleanup_estimates.values())
+        total_bytes = sum(e.total_bytes for e in self._cleanup_estimates.values())
+        ok = messagebox.askyesno(
+            "Confirmar Limpeza",
+            f"Tem certeza que deseja remover {total_items} itens "
+            f"(~{format_bytes(total_bytes)})?\n\n"
+            "Esta ação não pode ser desfeita.",
+        )
+        if not ok:
+            return
+
+        self._lock_ui()
+        self.btn_cancel_cleanup.configure(state="normal")
+        self.btn_execute_cleanup.configure(state="disabled")
+
+        # Reset progress bars for execution
+        for mode in self._cleanup_estimates:
+            widgets = self._cleanup_mode_rows[mode]
+            widgets["progress_bar"].set(0)
+            widgets["detail_lbl"].configure(text="Aguardando…")
+
+        # Register progress callbacks again for execution phase
+        for mode in self._cleanup_estimates:
+            self.cleanup_mgr.set_mode_progress_callback(
+                mode, lambda p, _m=mode: self._on_cleanup_mode_progress(p),
+            )
+
+        self._set_status("Executando limpeza…")
+
+        def _run():
+            try:
+                self.cleanup_mgr.reset()
+                results = self.cleanup_mgr.execute(serial, self._cleanup_estimates)
+                self._safe_after(0, lambda: self._execute_finished(results))
+            except Exception as exc:
+                log.exception("Cleanup error: %s", exc)
+                self._safe_after(0, lambda: self._execute_error(str(exc)))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _execute_finished(self, results: Dict[CleanupMode, ModeResult]):
+        self._unlock_ui()
+        self.btn_cancel_cleanup.configure(state="disabled")
+        self._cleanup_estimates.clear()
+
+        total_freed = sum(r.bytes_freed for r in results.values())
+        total_removed = sum(r.items_removed for r in results.values())
+        total_errors = sum(len(r.errors) for r in results.values())
+
+        lines = ["🧹 LIMPEZA CONCLUÍDA\n", "=" * 50 + "\n\n"]
+
+        for mode in MODE_ORDER:
+            res = results.get(mode)
+            if res is None:
+                continue
+            label = MODE_LABELS[mode]
+            if res.errors:
+                lines.append(
+                    f"  ⚠️ {label}: {res.items_removed} removidos, "
+                    f"{format_bytes(res.bytes_freed)} liberados  "
+                    f"({len(res.errors)} erros)\n"
+                )
+            else:
+                lines.append(
+                    f"  ✅ {label}: {res.items_removed} removidos, "
+                    f"{format_bytes(res.bytes_freed)} liberados\n"
+                )
+
+        lines.append(f"\n{'=' * 50}\n")
+        lines.append(
+            f"  TOTAL: {total_removed} itens removidos  •  "
+            f"~{format_bytes(total_freed)} liberados"
+        )
+        if total_errors:
+            lines.append(f"  •  {total_errors} erros\n")
+        else:
+            lines.append("\n")
+
+        self.cleanup_summary_text.configure(state="normal")
+        self.cleanup_summary_text.delete("1.0", "end")
+        self.cleanup_summary_text.insert("end", "".join(lines))
+        self.cleanup_summary_text.configure(state="disabled")
+        self._set_status(f"Limpeza concluída — {format_bytes(total_freed)} liberados")
+
+    def _execute_error(self, error: str):
+        self._unlock_ui()
+        self.btn_cancel_cleanup.configure(state="disabled")
+        self.cleanup_summary_text.configure(state="normal")
+        self.cleanup_summary_text.delete("1.0", "end")
+        self.cleanup_summary_text.insert("end", f"❌ Erro durante limpeza:\n{error}")
+        self.cleanup_summary_text.configure(state="disabled")
+        self._set_status("Erro na limpeza")
+
+    def _cancel_cleanup(self):
+        self.cleanup_mgr.cancel()
+        self._set_status("Limpeza cancelada")
 
     # ==================================================================
     # BACKUP TAB
@@ -2160,13 +2564,18 @@ class ADBToolkitApp(ctk.CTk):
 
     def _lockable_buttons(self):
         """Return the list of buttons that should be disabled during operations."""
-        return [
+        btns = [
             self.btn_start_backup,
             self.btn_start_restore,
             self.btn_start_transfer,
             self.btn_clone_device,
             self.btn_refresh,
         ]
+        if hasattr(self, "btn_scan_cleanup"):
+            btns.append(self.btn_scan_cleanup)
+        if hasattr(self, "btn_execute_cleanup"):
+            btns.append(self.btn_execute_cleanup)
+        return btns
 
     # ==================================================================
     # Backup operations
