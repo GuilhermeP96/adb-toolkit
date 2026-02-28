@@ -11,6 +11,7 @@ Orchestrates backup from source device and restore to target device:
 """
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -25,6 +26,9 @@ from .adb_base import (
     THUMBNAIL_DUMP_PATTERNS,
     run_parallel,
     safe_percent,
+    _shell_quote,
+    _sanitize_local_rel,
+    _long_path_str,
 )
 from .adb_core import ADBCore, DeviceInfo
 from .backup_manager import BackupManager, BackupManifest, BackupProgress
@@ -610,20 +614,24 @@ class TransferManager(ADBManagerBase):
             batch_pulled = 0
             batch_pull_errors = 0
 
-            # Pre-create local dirs
+            # Pre-create local dirs (sanitize names for Windows compat)
+            _stage_local_map: Dict[str, Path] = {}  # remote_path → sanitized local
             for remote_path, _ in batch:
-                rel = remote_path[len(storage_path):].lstrip("/")
-                local_path = storage_staging / rel
+                raw_rel = remote_path[len(storage_path):].lstrip("/")
+                safe_rel = _sanitize_local_rel(remote_path, storage_path)
+                local_path = storage_staging / safe_rel.replace("/", os.sep)
+                _stage_local_map[remote_path] = local_path
                 local_path.parent.mkdir(parents=True, exist_ok=True)
 
-            def _pull_one(remote_path: str, rel: str) -> bool:
+            def _pull_one(remote_path: str, _unused: str) -> bool:
                 if self._cancel_flag.is_set():
                     return False
-                local_path = storage_staging / rel
+                local_path = _stage_local_map[remote_path]
                 try:
-                    return self.adb.pull(remote_path, str(local_path), source_serial)
+                    return self.adb.pull(remote_path, _long_path_str(local_path), source_serial)
                 except Exception as exc:
                     log.warning("Error pulling %s: %s", remote_path, exc)
+                    return False
                     return False
 
             pull_workers = self.accelerator.optimal_workers(
@@ -677,7 +685,7 @@ class TransferManager(ADBManagerBase):
             if not local_files:
                 continue
 
-            # Pre-create remote parent dirs in one batch
+            # Pre-create remote parent dirs in one batch (properly quoted)
             parent_dirs = set()
             for lf in local_files:
                 rel = lf.relative_to(storage_staging).as_posix()
@@ -688,13 +696,13 @@ class TransferManager(ADBManagerBase):
             chunk_size = 50
             for i in range(0, len(dir_list), chunk_size):
                 chunk = dir_list[i:i + chunk_size]
-                dirs_str = "' '".join(chunk)
+                dirs_str = " ".join(_shell_quote(d) for d in chunk)
                 try:
-                    self.adb.run_shell(f"mkdir -p '{dirs_str}'", target_serial)
+                    self.adb.run_shell(f"mkdir -p {dirs_str}", target_serial)
                 except Exception:
                     for d in chunk:
                         try:
-                            self.adb.run_shell(f"mkdir -p '{d}'", target_serial)
+                            self.adb.run_shell(f"mkdir -p {_shell_quote(d)}", target_serial)
                         except Exception:
                             pass
 

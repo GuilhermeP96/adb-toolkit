@@ -49,6 +49,126 @@ log = logging.getLogger("adb_toolkit.base")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Path sanitization & quoting helpers
+# ═══════════════════════════════════════════════════════════════════════════
+# Filenames on Android devices can contain characters that are illegal on
+# Windows (or cause ADB to fail), have excessive whitespace, or produce
+# paths that exceed MAX_PATH.  These helpers clean names for local storage
+# and properly quote paths for device-side shell commands.
+
+# Characters forbidden in Windows file / directory names
+_WIN_ILLEGAL = re.compile(r'[<>:"|?*\x00-\x1f]')
+# Collapse runs of whitespace (spaces, tabs, etc.) into a single space
+_MULTI_WS = re.compile(r'[\s\xa0\u3000]+')  # includes NBSP, ideographic space
+
+_PATH_MAP_FILENAME = "_path_mapping.json"
+
+
+def _sanitize_filename(name: str, max_len: int = 200) -> str:
+    """Sanitize a single file-system component (file or directory name).
+
+    * Collapse runs of whitespace to a single space
+    * Strip leading / trailing whitespace and dots (Windows restriction)
+    * Replace characters illegal on Windows with ``_``
+    * Truncate to *max_len* characters (preserving extension for files)
+    * Guarantee a non-empty result
+    """
+    name = _MULTI_WS.sub(' ', name)        # collapse whitespace
+    name = name.strip().strip('.')          # strip edges
+    name = _WIN_ILLEGAL.sub('_', name)      # remove illegal chars
+
+    if not name:
+        return '_unnamed_'
+
+    if len(name) <= max_len:
+        return name
+
+    # Truncate while preserving extension
+    base, dot, ext = name.rpartition('.')
+    if dot and len(ext) < 20:
+        allowed = max_len - len(ext) - 1
+        return base[:max(allowed, 1)] + '.' + ext
+    return name[:max_len]
+
+
+def _sanitize_local_rel(remote_path: str, strip_prefix: str = "/") -> str:
+    """Build a sanitized *relative* local path from a remote path.
+
+    Each path component is passed through :func:`_sanitize_filename`.
+    Returns a POSIX-style relative string (forward slashes).
+    """
+    rel = remote_path.lstrip(strip_prefix).lstrip("/")
+    parts = rel.split("/")
+    safe_parts = [_sanitize_filename(p) for p in parts if p]
+    return "/".join(safe_parts)
+
+
+def _long_path_str(path: Path) -> str:
+    """Return a string representation that supports long paths on Windows.
+
+    On Windows, paths longer than 259 characters get the ``\\\\?\\``
+    prefix so that the OS API accepts them.  On other platforms, returns
+    ``str(path)`` unchanged.
+    """
+    s = str(path)
+    if os.name == 'nt' and len(s) > 259 and not s.startswith('\\\\?\\'):
+        # resolve() gives an absolute path which is required for \\?\ prefix
+        return '\\\\?\\' + str(path.resolve())
+    return s
+
+
+def _shell_quote(s: str) -> str:
+    """Shell-escape *s* for use inside a single-quoted ``sh`` argument.
+
+    On the Android shell (mksh / toybox) the safest quoting strategy is
+    to wrap in single quotes and escape any embedded single quotes as
+    ``'\\''``.
+    """
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _save_path_mapping(dest_root: Path, mapping: Dict[str, str]) -> None:
+    """Persist the *sanitized-local-rel → original-remote* mapping to JSON.
+
+    Only written when at least one path was actually changed during
+    sanitization.
+    """
+    import json
+    if not mapping:
+        return
+    try:
+        dest_root.mkdir(parents=True, exist_ok=True)
+        map_file = dest_root / _PATH_MAP_FILENAME
+        map_file.write_text(
+            json.dumps(mapping, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        log.debug("Saved path mapping (%d entries) → %s", len(mapping), map_file)
+    except OSError as exc:
+        log.warning("Could not save path mapping: %s", exc)
+
+
+def _load_path_mapping(backup_dir: Path) -> Dict[str, str]:
+    """Load a path mapping previously saved by :func:`_save_path_mapping`.
+
+    Returns ``{sanitized_local_rel: original_remote_path}`` or empty dict.
+    """
+    import json
+    # Walk up one level — mapping may be saved in the files/ or media/
+    # sub-directory, or directly in the backup root.
+    for candidate in (backup_dir, backup_dir.parent):
+        map_file = candidate / _PATH_MAP_FILENAME
+        if map_file.is_file():
+            try:
+                raw = json.loads(map_file.read_text(encoding="utf-8"))
+                if isinstance(raw, dict):
+                    return raw
+            except (OSError, json.JSONDecodeError) as exc:
+                log.warning("Could not load path mapping from %s: %s", map_file, exc)
+    return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Shared persistent I/O thread pool  ("virtual-thread" pattern)
 # ═══════════════════════════════════════════════════════════════════════════
 # All ADB operations (pull / push / shell) are I/O-bound: the calling thread
@@ -329,9 +449,11 @@ class ADBManagerBase:
             if self._is_cancelled():
                 break
             try:
+                # Use -exec instead of | xargs to handle filenames with
+                # spaces, quotes and other special characters safely.
                 cmd = (
-                    f'find "{rpath}" -type f 2>/dev/null'
-                    f" | xargs stat -c '%n|%s' 2>/dev/null"
+                    f'find {_shell_quote(rpath)} -type f'
+                    f" -exec stat -c '%n|%s' {{}} + 2>/dev/null"
                 )
                 out = self.adb.run_shell(cmd, serial, timeout=timeout)
                 for line in out.splitlines():
@@ -417,10 +539,17 @@ class ADBManagerBase:
             total_files, workers, avg_size,
         )
 
-        # Pre-create local directories
+        # Pre-create local directories (with sanitized names)
+        _path_mapping: Dict[str, str] = {}  # sanitized_rel → original_remote
+        _local_map: Dict[str, Path] = {}     # remote_path → sanitized local Path
         for remote_path, _ in file_list:
-            rel = remote_path.lstrip(strip_prefix).lstrip("/")
-            (dest_root / rel).parent.mkdir(parents=True, exist_ok=True)
+            safe_rel = _sanitize_local_rel(remote_path, strip_prefix)
+            orig_rel = remote_path.lstrip(strip_prefix).lstrip("/")
+            if safe_rel != orig_rel:
+                _path_mapping[safe_rel] = remote_path
+            local_path = dest_root / safe_rel.replace("/", os.sep)
+            _local_map[remote_path] = local_path
+            local_path.parent.mkdir(parents=True, exist_ok=True)
 
         _lock = threading.Lock()
         counters = {"ok": 0, "bytes": 0, "items": 0}
@@ -428,11 +557,10 @@ class ADBManagerBase:
         def _pull_one(remote_path: str, fsize: int) -> None:
             if self._is_cancelled():
                 return
-            rel = remote_path.lstrip(strip_prefix).lstrip("/")
-            local_path = dest_root / rel
+            local_path = _local_map[remote_path]
             ok = False
             try:
-                self.adb.pull(remote_path, str(local_path), serial)
+                self.adb.pull(remote_path, _long_path_str(local_path), serial)
                 ok = True
             except Exception as exc:
                 log.warning("Pull failed: %s — %s", remote_path, exc)
@@ -463,6 +591,9 @@ class ADBManagerBase:
         # Sliding-window on the shared I/O pool
         run_parallel(_pull_one, file_list, workers)
 
+        # Persist mapping so restore can recover original remote paths
+        _save_path_mapping(dest_root, _path_mapping)
+
         return counters["ok"], counters["bytes"]
 
     # -- sequential fallback for pull --
@@ -485,17 +616,21 @@ class ADBManagerBase:
 
         success_count = 0
         bytes_done = 0
+        _path_mapping: Dict[str, str] = {}  # sanitized_rel → original_remote
 
         for idx, (remote_path, fsize) in enumerate(file_list):
             if self._is_cancelled():
                 break
 
-            rel = remote_path.lstrip(strip_prefix).lstrip("/")
-            local_path = dest_root / rel
+            safe_rel = _sanitize_local_rel(remote_path, strip_prefix)
+            orig_rel = remote_path.lstrip(strip_prefix).lstrip("/")
+            if safe_rel != orig_rel:
+                _path_mapping[safe_rel] = remote_path
+            local_path = dest_root / safe_rel.replace("/", os.sep)
             local_path.parent.mkdir(parents=True, exist_ok=True)
 
             try:
-                self.adb.pull(remote_path, str(local_path), serial)
+                self.adb.pull(remote_path, _long_path_str(local_path), serial)
                 success_count += 1
             except Exception as exc:
                 log.warning("Pull failed: %s — %s", remote_path, exc)
@@ -515,6 +650,7 @@ class ADBManagerBase:
                 percent=pct,
             ))
 
+        _save_path_mapping(dest_root, _path_mapping)
         return success_count, bytes_done
 
     def push_with_progress(
@@ -551,6 +687,7 @@ class ADBManagerBase:
         pct_span = pct_hi - pct_lo
 
         # Pre-create remote directories in batch (always)
+        # Shell-quote each path to handle spaces, quotes, etc.
         parent_dirs = set()
         for _, remote in files_to_push:
             parent_dirs.add(os.path.dirname(remote))
@@ -558,13 +695,13 @@ class ADBManagerBase:
         dir_list = sorted(parent_dirs)
         for i in range(0, len(dir_list), 50):
             chunk = dir_list[i: i + 50]
-            dirs_str = "' '".join(chunk)
+            dirs_str = " ".join(_shell_quote(d) for d in chunk)
             try:
-                self.adb.run_shell(f"mkdir -p '{dirs_str}'", serial)
+                self.adb.run_shell(f"mkdir -p {dirs_str}", serial)
             except Exception:
                 for d in chunk:
                     try:
-                        self.adb.run_shell(f"mkdir -p '{d}'", serial)
+                        self.adb.run_shell(f"mkdir -p {_shell_quote(d)}", serial)
                     except Exception:
                         pass
 

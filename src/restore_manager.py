@@ -20,7 +20,10 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .adb_core import ADBCore, DeviceInfo
-from .adb_base import ADBManagerBase, OperationProgress, safe_percent
+from .adb_base import (
+    ADBManagerBase, OperationProgress, safe_percent,
+    _load_path_mapping, _PATH_MAP_FILENAME,
+)
 from .backup_manager import BackupManifest, BackupProgress, MEDIA_PATHS
 
 log = logging.getLogger("adb_toolkit.restore")
@@ -113,6 +116,10 @@ class RestoreManager(ADBManagerBase):
         # Collect files to restore
         files_to_restore: List[Tuple[Path, str]] = []
 
+        # Load path mapping to recover original remote paths from
+        # sanitized local file / directory names.
+        path_map = _load_path_mapping(folder)
+
         if specific_files:
             for sf in specific_files:
                 local = folder / sf.lstrip("/")
@@ -129,12 +136,17 @@ class RestoreManager(ADBManagerBase):
                             target_prefixes.append(p.lstrip("/"))
 
             for local_file in folder.rglob("*"):
-                if local_file.is_file():
+                if local_file.is_file() and local_file.name != _PATH_MAP_FILENAME:
                     rel = local_file.relative_to(folder)
-                    remote = "/" + str(rel).replace("\\", "/")
+                    rel_posix = str(rel).replace("\\", "/")
+                    # Use path mapping to restore to the *original* remote
+                    # path (before sanitization) when available.
+                    remote = path_map.get(rel_posix, "/" + rel_posix)
+                    if not remote.startswith("/"):
+                        remote = "/" + remote
 
                     if target_prefixes:
-                        if any(str(rel).replace("\\", "/").startswith(p) for p in target_prefixes):
+                        if any(rel_posix.startswith(p) for p in target_prefixes):
                             files_to_restore.append((local_file, remote))
                     else:
                         files_to_restore.append((local_file, remote))
@@ -531,11 +543,15 @@ class RestoreManager(ADBManagerBase):
                 # 2. Restore media files — parallel via push_with_progress
                 media_dir = app_dir / "media"
                 if media_dir.exists():
+                    media_map = _load_path_mapping(media_dir)
                     files_to_push = []
                     for local_file in media_dir.rglob("*"):
-                        if local_file.is_file():
+                        if local_file.is_file() and local_file.name != _PATH_MAP_FILENAME:
                             rel = local_file.relative_to(media_dir)
-                            remote = "/" + str(rel).replace("\\", "/")
+                            rel_posix = str(rel).replace("\\", "/")
+                            remote = media_map.get(rel_posix, "/" + rel_posix)
+                            if not remote.startswith("/"):
+                                remote = "/" + remote
                             files_to_push.append((local_file, remote))
                     if files_to_push:
                         self.push_with_progress(
@@ -590,10 +606,14 @@ class RestoreManager(ADBManagerBase):
             return False
 
         files_to_restore: List[Tuple[Path, str]] = []
+        custom_map = _load_path_mapping(files_dir)
         for local_file in files_dir.rglob("*"):
-            if local_file.is_file():
+            if local_file.is_file() and local_file.name != _PATH_MAP_FILENAME:
                 rel = local_file.relative_to(files_dir)
-                remote = "/" + str(rel).replace("\\", "/")
+                rel_posix = str(rel).replace("\\", "/")
+                remote = custom_map.get(rel_posix, "/" + rel_posix)
+                if not remote.startswith("/"):
+                    remote = "/" + remote
                 if target_paths:
                     if any(remote.startswith(t) for t in target_paths):
                         files_to_restore.append((local_file, remote))
@@ -682,11 +702,15 @@ class RestoreManager(ADBManagerBase):
             # 2. Push data files back — parallel via push_with_progress
             data_dir = pkg_dir / "data"
             if data_dir.exists():
+                data_map = _load_path_mapping(data_dir)
                 files_to_push = []
                 for local_file in data_dir.rglob("*"):
-                    if local_file.is_file():
+                    if local_file.is_file() and local_file.name != _PATH_MAP_FILENAME:
                         rel = local_file.relative_to(data_dir)
-                        remote = "/" + str(rel).replace("\\", "/")
+                        rel_posix = str(rel).replace("\\", "/")
+                        remote = data_map.get(rel_posix, "/" + rel_posix)
+                        if not remote.startswith("/"):
+                            remote = "/" + remote
                         files_to_push.append((local_file, remote))
                 if files_to_push:
                     self.push_with_progress(

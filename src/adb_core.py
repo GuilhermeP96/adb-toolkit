@@ -340,7 +340,9 @@ class ADBCore:
         return r.returncode == 0
 
     def list_dir(self, remote_path: str, serial: Optional[str] = None) -> List[str]:
-        out = self.run_shell(f"ls -1 {remote_path}", serial)
+        # Shell-escape the path so spaces / quotes in dir names are safe.
+        escaped = remote_path.replace("'", "'\\''")
+        out = self.run_shell(f"ls -1 '{escaped}'", serial)
         return [l for l in out.splitlines() if l.strip()]
 
     # ------------------------------------------------------------------

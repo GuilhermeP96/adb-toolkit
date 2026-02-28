@@ -32,6 +32,7 @@ from typing import (
 )
 
 from .device_interface import DeviceInterface, DeviceManager, DevicePlatform
+from .adb_base import _sanitize_filename, _long_path_str
 
 log = logging.getLogger(__name__)
 
@@ -403,7 +404,7 @@ class WhatsAppTransferManager:
                 break
 
             cat_name = subdir.split("/")[-1] if "/" in subdir else subdir
-            local_dir = staging / cat_name.replace(" ", "_")
+            local_dir = staging / _sanitize_filename(cat_name.replace(" ", "_"))
             local_dir.mkdir(parents=True, exist_ok=True)
 
             for fname in files:
@@ -416,7 +417,9 @@ class WhatsAppTransferManager:
                     remote_path = f"{subdir}/{fname}" if subdir.startswith("/") \
                         else f"/{subdir}/{fname}"
 
-                local_path = local_dir / fname
+                # Sanitize filename for Windows compatibility
+                safe_fname = _sanitize_filename(fname)
+                local_path = local_dir / safe_fname
                 pct = (done / total_files * 50) if total_files else 0  # 0-50%
 
                 self._emit(WhatsAppTransferProgress(
@@ -426,7 +429,7 @@ class WhatsAppTransferManager:
                 ))
 
                 try:
-                    iface.pull(remote_path, str(local_path), serial)
+                    iface.pull(remote_path, _long_path_str(local_path), serial)
                     done += 1
                 except Exception as exc:
                     log.warning("Pull failed: %s — %s", remote_path, exc)

@@ -38,6 +38,7 @@ from .format_converter import (
     SMSConverter,
     VCardConverter,
 )
+from .adb_base import _sanitize_filename, _long_path_str
 
 log = logging.getLogger("adb_toolkit.cross_transfer")
 
@@ -403,13 +404,15 @@ class CrossPlatformTransferManager:
                     break
 
                 remote_file = f"{src_path}/{entry}"
-                local_file = media_staging / entry
+                # Sanitize the filename for local storage (Windows compat)
+                safe_entry = _sanitize_filename(entry)
+                local_file = media_staging / safe_entry
 
                 self._progress.current_item = entry
                 self._emit()
 
                 # Pull from source
-                if src.pull(remote_file, str(local_file), src_serial):
+                if src.pull(remote_file, _long_path_str(local_file), src_serial):
                     total_pulled += 1
 
                     # Convert if needed (HEIC → JPEG for Android targets)

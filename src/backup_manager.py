@@ -33,6 +33,7 @@ from .adb_base import (
     CACHE_PATTERNS,
     THUMBNAIL_DUMP_PATTERNS,
     run_parallel,
+    _shell_quote,
 )
 
 log = logging.getLogger("adb_toolkit.backup")
@@ -981,7 +982,7 @@ class BackupManager(ADBManagerBase):
                 data_path = f"{base_dir}/{pkg}"
                 try:
                     check = self.adb.run_shell(
-                        f'test -d "{data_path}" && echo yes',
+                        f'test -d {_shell_quote(data_path)} && echo yes',
                         serial, timeout=5,
                     )
                     if "yes" in check:
@@ -1089,13 +1090,13 @@ class BackupManager(ADBManagerBase):
                 break
             try:
                 check = self.adb.run_shell(
-                    f'test -d "{rpath}" && echo DIR || echo FILE', serial, timeout=5,
+                    f'test -d {_shell_quote(rpath)} && echo DIR || echo FILE', serial, timeout=5,
                 )
                 if "DIR" in check:
                     dir_paths.append(rpath)
                 else:
                     out = self.adb.run_shell(
-                        f'stat -c "%s" "{rpath}" 2>/dev/null', serial, timeout=5,
+                        f"stat -c '%s' {_shell_quote(rpath)} 2>/dev/null", serial, timeout=5,
                     )
                     try:
                         fsize = int(out.strip())
