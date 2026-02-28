@@ -12,7 +12,7 @@ log = logging.getLogger("adb_toolkit.config")
 DEFAULT_CONFIG = {
     "app": {
         "name": "ADB Toolkit",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "language": "pt-BR",
         "theme": "dark",
         "check_updates": True,

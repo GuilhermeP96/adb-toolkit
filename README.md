@@ -1,6 +1,6 @@
 # ADB Toolkit — Backup, Recovery & Transfer
 
-Ferramenta completa para **backup**, **recuperação** e **transferência** de dados entre dispositivos Android via **ADB**, com detecção e instalação automática de drivers USB, aceleração por GPU e transferência streaming.
+Ferramenta completa para **backup**, **recuperação** e **transferência** de dados entre dispositivos Android via **ADB**, com suporte a **transferência cross-platform Android ↔ iOS**, detecção e instalação automática de drivers USB, aceleração por GPU e transferência streaming.
 
 ---
 
@@ -46,6 +46,21 @@ Ferramenta completa para **backup**, **recuperação** e **transferência** de d
 - Suporte a Wi-Fi credentials (com root)
 - Detecção de apps de mensagem e apps com dados não sincronizados
 
+### 🔀 Transferência Cross-Platform (Android ↔ iOS) **NOVO**
+- **Detecção automática** de dispositivos iOS via `pymobiledevice3` (opcional)
+- **Dados transferíveis:**
+  - 📸 Fotos (com conversão HEIC → JPEG automática)
+  - 🎬 Vídeos
+  - 🎵 Músicas
+  - 📄 Documentos
+  - 👤 Contatos (via VCF com mapeamento de campos)
+  - 💬 SMS (Android → iOS: referência; iOS → Android: JSON)
+  - 📅 Calendário (via ICS — padrão universal)
+  - 💬 WhatsApp (mídias: fotos, vídeos, áudios, documentos, stickers)
+- **Arquitetura extensível**: interface abstrata `DeviceInterface` com adaptadores por plataforma
+- **Guia oficial WhatsApp**: orienta o usuário a usar a migração oficial para conversas
+- **Limitações transparentes**: avisa sobre o que NÃO pode ser transferido (apps, dados internos de apps)
+
 ### ⚡ Aceleração por GPU
 - Detecção automática de GPUs: Intel (OpenCL/oneAPI), NVIDIA (CUDA), AMD (OpenCL)
 - Verificação de checksums acelerada por GPU
@@ -81,6 +96,8 @@ Ferramenta completa para **backup**, **recuperação** e **transferência** de d
 - **Windows**: drivers USB (instalados automaticamente)
 - **Linux/macOS**: geralmente não precisa de drivers adicionais
 - **GPU** (opcional): PyOpenCL para aceleração — detectado automaticamente
+- **iOS** (opcional): `pymobiledevice3` para suporte cross-platform Android ↔ iOS
+- **HEIC** (opcional): `pillow-heif` para conversão automática de fotos iOS
 
 ## 🚀 Instalação
 
@@ -91,6 +108,9 @@ cd adb-toolkit
 
 # Instale dependências
 pip install -r requirements.txt
+
+# (Opcional) Suporte iOS — transferência cross-platform
+pip install pymobiledevice3 pillow-heif
 ```
 
 ## ▶️ Uso
@@ -150,6 +170,12 @@ adb-toolkit/
 │   ├── backup_manager.py    # Gerenciador de backup
 │   ├── restore_manager.py   # Gerenciador de restauração
 │   ├── transfer_manager.py  # Transferência streaming entre dispositivos
+│   ├── device_interface.py  # Interface abstrata multi-plataforma
+│   ├── adb_adapter.py       # Adaptador ADB → DeviceInterface
+│   ├── ios_core.py          # Interface iOS via pymobiledevice3
+│   ├── cross_transfer.py    # Orquestrador de transferência cross-platform
+│   ├── format_converter.py  # Conversores: VCF, SMS, ICS, HEIC
+│   ├── whatsapp_transfer.py # Transferência de mídias do WhatsApp
 │   ├── driver_manager.py    # Detecção/instalação de drivers
 │   ├── device_explorer.py   # Árvore de arquivos e detecção de apps
 │   ├── gui.py               # Interface gráfica (customtkinter)
@@ -166,9 +192,11 @@ adb-toolkit/
 ## 🔒 Notas de Segurança
 
 - **Depuração USB** deve estar ativada no dispositivo Android
+- **iOS**: o iPhone deve estar desbloqueado e confiar no computador (botão "Confiar")
 - Backup de contatos/SMS pode exigir root em Android modernos
 - Drivers são instalados apenas quando executado como Administrador
 - Backups são armazenados localmente — proteja a pasta de backups
+- **WhatsApp**: transferência cross-platform copia apenas mídias; para conversas, use a migração oficial do WhatsApp
 
 ## 📝 Licença
 

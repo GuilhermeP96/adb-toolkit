@@ -30,6 +30,16 @@ from .device_explorer import (
 from .config import Config
 from .utils import format_bytes, format_duration, open_folder, is_adb_in_path, add_adb_to_path, remove_adb_from_path, get_adb_dir, is_admin
 from .accelerator import TransferAccelerator, detect_all_gpus, detect_virtualization
+from .device_interface import DeviceManager, DevicePlatform, UnifiedDeviceInfo
+from .adb_adapter import ADBAdapter
+from .cross_transfer import CrossPlatformTransferManager, CrossTransferConfig, CrossTransferProgress
+
+# Optional iOS support
+try:
+    from .ios_core import iOSCore, is_ios_available
+    _IOS_AVAILABLE = is_ios_available()
+except Exception:
+    _IOS_AVAILABLE = False
 
 log = logging.getLogger("adb_toolkit.gui")
 
@@ -67,7 +77,20 @@ class ADBToolkitApp(ctk.CTk):
         self.transfer_mgr = TransferManager(adb)
         self.driver_mgr = DriverManager(adb.base_dir)
 
+        # Cross-platform device manager
+        self.device_mgr = DeviceManager()
+        self.device_mgr.register(ADBAdapter(adb))
+        if _IOS_AVAILABLE:
+            try:
+                self.device_mgr.register(iOSCore(adb.base_dir / "ios"))
+            except Exception as exc:
+                log.warning("Could not initialize iOS support: %s", exc)
+        self.cross_transfer_mgr = CrossPlatformTransferManager(
+            self.device_mgr, adb.base_dir / "transfers",
+        )
+
         self.devices: Dict[str, DeviceInfo] = {}
+        self.unified_devices: Dict[str, UnifiedDeviceInfo] = {}
         self.selected_device: Optional[str] = None
         self._closing = False
         self._ready = False  # True after UI fully built
@@ -1511,22 +1534,44 @@ class ADBToolkitApp(ctk.CTk):
             log.warning("Failed to list devices: %s", exc)
             self.devices = {}
 
+        # Also discover iOS devices via DeviceManager
+        try:
+            all_unified = self.device_mgr.list_all_devices()
+            self.unified_devices = {d.serial: d for d in all_unified}
+        except Exception as exc:
+            log.debug("Unified device scan: %s", exc)
+            self.unified_devices = {}
+
+        # Count total (Android + iOS)
+        android_count = len(self.devices)
+        ios_count = sum(
+            1 for d in self.unified_devices.values()
+            if d.platform == DevicePlatform.IOS
+        )
+        total_count = android_count + ios_count
+
         # Update top bar
-        count = len(self.devices)
-        if count == 0:
+        if total_count == 0:
             self.lbl_connection.configure(
                 text="Nenhum dispositivo conectado",
                 text_color=COLORS["text_dim"],
             )
-        elif count == 1:
-            dev = list(self.devices.values())[0]
-            self.lbl_connection.configure(
-                text=f"✅ {dev.friendly_name()} ({dev.state})",
-                text_color=COLORS["success"],
-            )
+        elif total_count == 1:
+            if self.devices:
+                dev = list(self.devices.values())[0]
+                label = f"✅ 🤖 {dev.friendly_name()} ({dev.state})"
+            else:
+                dev_u = [d for d in self.unified_devices.values() if d.platform == DevicePlatform.IOS][0]
+                label = f"✅ 🍎 {dev_u.friendly_name()}"
+            self.lbl_connection.configure(text=label, text_color=COLORS["success"])
         else:
+            parts = []
+            if android_count:
+                parts.append(f"🤖{android_count}")
+            if ios_count:
+                parts.append(f"🍎{ios_count}")
             self.lbl_connection.configure(
-                text=f"✅ {count} dispositivos conectados",
+                text=f"✅ {total_count} dispositivos ({' + '.join(parts)})",
                 text_color=COLORS["success"],
             )
 
@@ -1534,21 +1579,26 @@ class ADBToolkitApp(ctk.CTk):
         for w in self.device_list_frame.winfo_children():
             w.destroy()
 
-        if not self.devices:
+        if not self.devices and not ios_count:
             self.lbl_no_devices = ctk.CTkLabel(
                 self.device_list_frame,
                 text="Nenhum dispositivo detectado.\n\n"
-                     "1. Conecte seu dispositivo Android via USB\n"
-                     "2. Ative a 'Depuração USB' nas Opções do Desenvolvedor\n"
-                     "3. Aceite o prompt de depuração no dispositivo",
+                     "1. Conecte seu dispositivo Android ou iPhone via USB\n"
+                     "2. Android: Ative 'Depuração USB' nas Opções do Desenvolvedor\n"
+                     "3. iPhone: Confie neste computador quando solicitado",
                 font=ctk.CTkFont(size=13),
                 text_color=COLORS["text_dim"],
                 justify="center",
             )
             self.lbl_no_devices.pack(expand=True, pady=40)
         else:
+            # Android devices
             for serial, dev in self.devices.items():
                 self._create_device_card(serial, dev)
+            # iOS devices
+            for serial, udev in self.unified_devices.items():
+                if udev.platform == DevicePlatform.IOS:
+                    self._create_ios_device_card(serial, udev)
 
         # Update transfer device menus (preserves user selection)
         self._update_transfer_menus()
@@ -1595,6 +1645,9 @@ class ADBToolkitApp(ctk.CTk):
             w.destroy()
         for serial, dev in self.devices.items():
             self._create_device_card(serial, dev)
+        for serial, udev in self.unified_devices.items():
+            if udev.platform == DevicePlatform.IOS:
+                self._create_ios_device_card(serial, udev)
 
         # Refresh transfer menus with enriched names
         self._update_transfer_menus()
@@ -1678,6 +1731,63 @@ class ADBToolkitApp(ctk.CTk):
             fg_color="#7b2cbf", hover_color="#9d4edd",
             command=lambda s=serial: self._open_cache_manager(s),
         ).pack(side="left", padx=4)
+
+    def _create_ios_device_card(self, serial: str, dev: UnifiedDeviceInfo):
+        """Create a card widget for an iOS device."""
+        card = ctk.CTkFrame(self.device_list_frame, corner_radius=8)
+        card.pack(fill="x", padx=4, pady=4)
+
+        name = dev.friendly_name()
+        state_color = COLORS["success"]
+
+        # ---- Row 1: Name + serial ----
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=8, pady=(8, 2))
+
+        ctk.CTkLabel(
+            top, text=f"🍎 {name}",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            top, text=f"  [iOS {dev.os_version}]",
+            text_color=state_color,
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            top, text=serial[:16] + "…" if len(serial) > 16 else serial,
+            text_color=COLORS["text_dim"],
+            font=ctk.CTkFont(size=11),
+        ).pack(side="right")
+
+        # ---- Row 2: Info ----
+        info_row = ctk.CTkFrame(card, fg_color="transparent")
+        info_row.pack(fill="x", padx=8, pady=(0, 4))
+
+        details_parts: List[str] = ["Apple"]
+        if dev.model:
+            details_parts.append(dev.model)
+        if dev.device_class:
+            details_parts.append(dev.device_class)
+        stor = dev.storage_summary()
+        if stor:
+            details_parts.append(f"💾 {stor}")
+
+        ctk.CTkLabel(
+            info_row,
+            text="  •  ".join(details_parts),
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+        ).pack(side="left")
+
+        # ---- Row 3: Info note ----
+        ctk.CTkLabel(
+            card,
+            text="📋 Disponível para transferência cross-platform (Fotos, Contatos, SMS, Músicas)",
+            font=ctk.CTkFont(size=10),
+            text_color=COLORS["text_dim"],
+        ).pack(padx=8, pady=(0, 8), anchor="w")
 
     def _show_device_details(self, serial: str):
         """Show detailed device info."""
@@ -2317,11 +2427,18 @@ class ADBToolkitApp(ctk.CTk):
             self.transfer_dst_tree.set_serial(serial)
 
     def _update_transfer_menus(self):
-        serials = list(self.devices.keys())
+        # Build combined list: Android + iOS devices
+        names: List[str] = []
+        for s in self.devices:
+            dev = self.devices[s]
+            names.append(f"🤖 {dev.short_label()} ({s})")
+        for s, udev in self.unified_devices.items():
+            if udev.platform == DevicePlatform.IOS:
+                names.append(f"🍎 {udev.short_label()} ({s})")
+
         placeholder = "⬇ Selecione o dispositivo"
-        names = [
-            f"{self.devices[s].short_label()} ({s})" for s in serials
-        ] if serials else ["Nenhum dispositivo"]
+        if not names:
+            names = ["Nenhum dispositivo"]
 
         # Preserve current user selection if the device is still available
         prev_src = self.transfer_source_menu.get()
@@ -2330,7 +2447,7 @@ class ADBToolkitApp(ctk.CTk):
         self.transfer_source_menu.configure(values=names)
         self.transfer_target_menu.configure(values=names)
 
-        if not serials:
+        if names == ["Nenhum dispositivo"]:
             self.transfer_source_menu.set("Nenhum dispositivo")
             self.transfer_target_menu.set("Nenhum dispositivo")
             return
@@ -2361,6 +2478,12 @@ class ADBToolkitApp(ctk.CTk):
             return
         if src == tgt:
             messagebox.showwarning("Transferência", "Origem e destino devem ser diferentes")
+            return
+
+        # Detect cross-platform scenario
+        is_cross = self.device_mgr.is_cross_platform(src, tgt)
+        if is_cross:
+            self._start_cross_transfer(src, tgt)
             return
 
         # Update trees with correct serials
@@ -2410,6 +2533,208 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, self._transfer_finished)
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _start_cross_transfer(self, src_serial: str, tgt_serial: str):
+        """Handle cross-platform (Android ↔ iOS) transfer."""
+        src_info = self.device_mgr.get_device_info(src_serial)
+        tgt_info = self.device_mgr.get_device_info(tgt_serial)
+        src_name = src_info.friendly_name() if src_info else src_serial
+        tgt_name = tgt_info.friendly_name() if tgt_info else tgt_serial
+        src_plat = src_info.platform_label() if src_info else "?"
+        tgt_plat = tgt_info.platform_label() if tgt_info else "?"
+
+        # Cross-platform dialog
+        dlg = ctk.CTkToplevel(self)
+        dlg.title("🔀 Transferência Cross-Platform")
+        dlg.geometry("520x420")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.transient(self)
+        dlg.attributes("-topmost", True)
+
+        ctk.CTkLabel(
+            dlg, text="🔀 Transferência Cross-Platform",
+            font=ctk.CTkFont(size=18, weight="bold"),
+        ).pack(padx=16, pady=(16, 4))
+
+        ctk.CTkLabel(
+            dlg,
+            text=f"{src_name} ({src_plat})  ➡️  {tgt_name} ({tgt_plat})",
+            font=ctk.CTkFont(size=13),
+            text_color=COLORS["warning"],
+        ).pack(padx=16, pady=(0, 12))
+
+        # Checkboxes for what to transfer
+        cat_frame = ctk.CTkFrame(dlg)
+        cat_frame.pack(fill="x", padx=16, pady=8)
+
+        ctk.CTkLabel(
+            cat_frame, text="Selecione o que transferir:",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 4))
+
+        cross_cats = {
+            "photos": ("📸 Fotos", True),
+            "videos": ("🎬 Vídeos", True),
+            "music": ("🎵 Músicas", True),
+            "documents": ("📄 Documentos", True),
+            "contacts": ("👤 Contatos", True),
+            "sms": ("💬 SMS", True),
+            "calendar": ("📅 Calendário", True),
+            "whatsapp": ("💬 WhatsApp (mídias)", True),
+        }
+        cross_vars: Dict[str, ctk.BooleanVar] = {}
+        for key, (label, default) in cross_cats.items():
+            var = ctk.BooleanVar(value=default)
+            cross_vars[key] = var
+            ctk.CTkCheckBox(
+                cat_frame, text=label, variable=var,
+            ).pack(anchor="w", padx=20, pady=2)
+
+        # HEIC conversion option  
+        heic_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            cat_frame, text="🖼️ Converter HEIC → JPEG (iOS → Android)",
+            variable=heic_var,
+        ).pack(anchor="w", padx=20, pady=2)
+
+        # Warnings
+        warn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        warn_frame.pack(fill="x", padx=16, pady=(8, 4))
+        ctk.CTkLabel(
+            warn_frame,
+            text="⚠️ Apps não podem ser transferidos entre plataformas.\n"
+                 "⚠️ SMS: importação no iOS é limitada (apenas referência).\n"
+                 "⚠️ WhatsApp: apenas mídias — conversas use a migração oficial.",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["warning"],
+            justify="left",
+        ).pack(anchor="w")
+
+        # Buttons
+        btn_frame = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=16, pady=(8, 16))
+
+        def _on_confirm():
+            config = CrossTransferConfig(
+                photos=cross_vars["photos"].get(),
+                videos=cross_vars["videos"].get(),
+                music=cross_vars["music"].get(),
+                documents=cross_vars["documents"].get(),
+                contacts=cross_vars["contacts"].get(),
+                sms=cross_vars["sms"].get(),
+                calendar=cross_vars["calendar"].get(),
+                convert_heic=heic_var.get(),
+            )
+            want_whatsapp = cross_vars["whatsapp"].get()
+            dlg.destroy()
+            self._lock_ui()
+            self.btn_cancel_transfer.configure(state="normal")
+
+            def _run():
+                try:
+                    self.cross_transfer_mgr.set_progress_callback(
+                        self._on_cross_transfer_progress
+                    )
+                    success = self.cross_transfer_mgr.transfer(
+                        src_serial, tgt_serial, config
+                    )
+
+                    # WhatsApp media transfer (runs after main transfer)
+                    if want_whatsapp and success:
+                        try:
+                            from .whatsapp_transfer import (
+                                WhatsAppTransferManager,
+                                WhatsAppTransferConfig,
+                            )
+                            wa_mgr = WhatsAppTransferManager(self.device_mgr)
+                            wa_mgr.set_progress_callback(
+                                lambda p: self._on_cross_transfer_progress(
+                                    CrossTransferProgress(
+                                        phase="whatsapp",
+                                        sub_phase=p.sub_phase,
+                                        current_item=p.current_item,
+                                        percent=p.percent,
+                                        errors=p.errors,
+                                        warnings=p.warnings,
+                                    )
+                                )
+                            )
+                            wa_ok = wa_mgr.transfer(src_serial, tgt_serial)
+                            if not wa_ok:
+                                success = False
+                        except ImportError:
+                            log.warning("whatsapp_transfer module not available")
+                        except Exception as wa_exc:
+                            log.warning("WhatsApp transfer error: %s", wa_exc)
+
+                    msg = (
+                        "✅ Transferência cross-platform concluída!"
+                        if success else
+                        "⚠️ Transferência concluída com alguns erros."
+                    )
+                    self.after(0, lambda: messagebox.showinfo("Transferência", msg))
+                except Exception as exc:
+                    self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                finally:
+                    self.after(0, self._transfer_finished)
+
+            threading.Thread(target=_run, daemon=True).start()
+
+        ctk.CTkButton(
+            btn_frame,
+            text="✅ Iniciar Transferência",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            height=42, width=220,
+            command=_on_confirm,
+        ).pack(side="left", padx=8)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Cancelar",
+            fg_color=COLORS["text_dim"],
+            height=42, width=120,
+            command=dlg.destroy,
+        ).pack(side="left", padx=8)
+
+    def _on_cross_transfer_progress(self, p: CrossTransferProgress):
+        """Update UI from cross-platform transfer progress."""
+        def _update():
+            if self._closing:
+                return
+            try:
+                phase_labels = {
+                    "initializing": "Inicializando",
+                    "contacts": "Contatos",
+                    "sms": "SMS",
+                    "calendar": "Calendário",
+                    "photos": "Fotos",
+                    "videos": "Vídeos",
+                    "music": "Músicas",
+                    "documents": "Documentos",
+                    "whatsapp": "WhatsApp",
+                    "complete": "Concluído",
+                    "complete_with_errors": "Concluído (com erros)",
+                    "error": "Erro",
+                }
+                label = phase_labels.get(p.phase, p.phase)
+                self.transfer_progress_label.configure(
+                    text=f"🔀 {label}: {p.sub_phase} - {p.current_item}"
+                )
+                self.transfer_progress_bar.set(p.percent / 100)
+                detail = ""
+                if p.elapsed_seconds > 0:
+                    detail = f"Tempo: {format_duration(p.elapsed_seconds)}"
+                if p.errors:
+                    detail += f"  |  Erros: {len(p.errors)}"
+                if p.warnings:
+                    detail += f"  |  Avisos: {len(p.warnings)}"
+                self.transfer_progress_detail.configure(text=detail)
+            except Exception:
+                pass
+        self._safe_after(0, _update)
 
     # ------------------------------------------------------------------
     # Unsynced app detection for transfer tab
@@ -2525,20 +2850,25 @@ class ADBToolkitApp(ctk.CTk):
 
         Opens a CTkToplevel where the user picks source and destination
         devices, reviews storage info and filter toggles, then confirms.
+        Supports Android-only clone and cross-platform (Android ↔ iOS).
         """
-        serials = list(self.devices.keys())
-        if len(serials) < 2:
+        # Build combined label→serial mapping (Android + iOS)
+        dev_labels: Dict[str, str] = {}
+        for s in list(self.devices.keys()):
+            dev = self.devices[s]
+            dev_labels[f"🤖 {dev.short_label()}  ({s})"] = s
+        for s, udev in self.unified_devices.items():
+            if udev.platform == DevicePlatform.IOS:
+                dev_labels[f"🍎 {udev.short_label()}  ({s})"] = s
+
+        all_serials = list(dev_labels.values())
+        if len(all_serials) < 2:
             messagebox.showwarning(
                 "Clonar Dispositivo",
                 "Conecte pelo menos 2 dispositivos para clonar.",
             )
             return
 
-        # Build label→serial mapping
-        dev_labels: Dict[str, str] = {}
-        for s in serials:
-            dev = self.devices[s]
-            dev_labels[dev.short_label() + f"  ({s})"] = s
         label_list = list(dev_labels.keys())
 
         # Pre-select from dropdowns if already set
@@ -2624,22 +2954,42 @@ class ADBToolkitApp(ctk.CTk):
             for var, lbl in ((src_var, src_info_lbl), (tgt_var, tgt_info_lbl)):
                 serial = dev_labels.get(var.get())
                 if serial:
+                    # Try Android device first, then unified (iOS)
                     dev = self.devices.get(serial)
                     if dev:
                         stor = dev.storage_summary()
-                        lbl.configure(
-                            text=f"Serial: {serial}   |   Armazenamento: {stor or 'N/A'}",
-                        )
+                        plat = "Android"
+                    else:
+                        udev = self.unified_devices.get(serial)
+                        stor = udev.storage_summary() if udev else ""
+                        plat = udev.platform_label() if udev else "?"
+                    lbl.configure(
+                        text=f"{plat}  |  Serial: {serial[:20]}…  |  {stor or 'N/A'}",
+                    )
+
+            # Detect cross-platform and update scope label
+            s_src = dev_labels.get(src_var.get())
+            s_tgt = dev_labels.get(tgt_var.get())
+            if s_src and s_tgt and self.device_mgr.is_cross_platform(s_src, s_tgt):
+                scope_lbl.configure(
+                    text="🔀 Cross-Platform: Fotos • Vídeos • Músicas • Documentos • Contatos • SMS • Calendário\n"
+                         "⚠️ Apps NÃO são transferidos entre plataformas diferentes.",
+                    text_color=COLORS["warning"],
+                )
+            else:
+                scope_lbl.configure(
+                    text="Será copiado: Memória interna • Aplicativos • Contatos • SMS • Apps de mensagem",
+                    text_color=COLORS["text_dim"],
+                )
 
         src_var.trace_add("write", _refresh_info)
         tgt_var.trace_add("write", _refresh_info)
-        _refresh_info()
 
         # ---- What will be cloned ----
         scope_frame = ctk.CTkFrame(dlg, fg_color="transparent")
         scope_frame.pack(fill="x", padx=16, pady=(8, 2))
 
-        ctk.CTkLabel(
+        scope_lbl = ctk.CTkLabel(
             scope_frame,
             text=(
                 "Será copiado:  Memória interna  •  Aplicativos  •  Contatos  •  SMS  •  Apps de mensagem"
@@ -2647,7 +2997,10 @@ class ADBToolkitApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_dim"],
             wraplength=540,
-        ).pack(anchor="w")
+        )
+        scope_lbl.pack(anchor="w")
+
+        _refresh_info()  # Initial population
 
         # ---- Filter toggles ----
         filter_frame = ctk.CTkFrame(dlg, fg_color="transparent")
@@ -2680,21 +3033,37 @@ class ADBToolkitApp(ctk.CTk):
                 messagebox.showwarning("Clone", "Origem e destino devem ser DIFERENTES.", parent=dlg)
                 return
 
+            # Resolve names from either Android or Unified dict
             src_dev = self.devices.get(src_serial)
             tgt_dev = self.devices.get(tgt_serial)
-            src_name = src_dev.friendly_name() if src_dev else src_serial
-            tgt_name = tgt_dev.friendly_name() if tgt_dev else tgt_serial
+            src_udev = self.unified_devices.get(src_serial)
+            tgt_udev = self.unified_devices.get(tgt_serial)
+            src_name = (src_dev.friendly_name() if src_dev
+                        else src_udev.friendly_name() if src_udev else src_serial)
+            tgt_name = (tgt_dev.friendly_name() if tgt_dev
+                        else tgt_udev.friendly_name() if tgt_udev else tgt_serial)
+
+            is_cross = self.device_mgr.is_cross_platform(src_serial, tgt_serial)
 
             # Final safety confirmation
-            if not messagebox.askyesno(
-                "⚠️ Confirmação Final",
-                f"{src_name}  ➡️  {tgt_name}\n\n"
-                f"Todos os dados da memória interna do {src_name}\n"
-                f"serão copiados para o {tgt_name}.\n\n"
-                f"Os dados existentes no destino serão sobrescritos.\n\n"
-                f"Confirma?",
-                parent=dlg,
-            ):
+            if is_cross:
+                confirm_msg = (
+                    f"🔀 Cross-Platform\n"
+                    f"{src_name}  ➡️  {tgt_name}\n\n"
+                    f"Serão copiados: Fotos, Vídeos, Músicas, Documentos, Contatos, SMS, Calendário.\n"
+                    f"Apps NÃO serão transferidos (plataformas incompatíveis).\n\n"
+                    f"Confirma?"
+                )
+            else:
+                confirm_msg = (
+                    f"{src_name}  ➡️  {tgt_name}\n\n"
+                    f"Todos os dados da memória interna do {src_name}\n"
+                    f"serão copiados para o {tgt_name}.\n\n"
+                    f"Os dados existentes no destino serão sobrescritos.\n\n"
+                    f"Confirma?"
+                )
+
+            if not messagebox.askyesno("⚠️ Confirmação Final", confirm_msg, parent=dlg):
                 return
 
             # Capture settings and close dialog
@@ -2708,29 +3077,56 @@ class ADBToolkitApp(ctk.CTk):
             # Start the clone
             self._lock_ui()
             self.btn_cancel_transfer.configure(state="normal")
-            self._set_status(f"Indexando memória interna de {src_name}...")
 
-            def _run():
-                try:
-                    self.transfer_mgr.set_progress_callback(self._on_transfer_progress)
-                    success = self.transfer_mgr.clone_full_storage(
-                        src_serial, tgt_serial,
-                        storage_path="/storage/emulated/0",
-                        ignore_cache=_ic,
-                        ignore_thumbnails=_it,
-                    )
-                    msg = (
-                        "✅ Clone completo concluído com sucesso!"
-                        if success else
-                        "⚠️ Clone concluído com alguns erros. Verifique o log."
-                    )
-                    self.after(0, lambda: messagebox.showinfo("Clone", msg))
-                except Exception as exc:
-                    self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
-                finally:
-                    self.after(0, self._transfer_finished)
+            if is_cross:
+                # Cross-platform clone
+                self._set_status(f"Transferência cross-platform: {src_name} ➡️ {tgt_name}")
 
-            threading.Thread(target=_run, daemon=True).start()
+                def _run():
+                    try:
+                        self.cross_transfer_mgr.set_progress_callback(
+                            self._on_cross_transfer_progress
+                        )
+                        success = self.cross_transfer_mgr.transfer(
+                            src_serial, tgt_serial
+                        )
+                        msg = (
+                            "✅ Transferência cross-platform concluída!"
+                            if success else
+                            "⚠️ Transferência concluída com alguns erros."
+                        )
+                        self.after(0, lambda: messagebox.showinfo("Clone", msg))
+                    except Exception as exc:
+                        self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                    finally:
+                        self.after(0, self._transfer_finished)
+
+                threading.Thread(target=_run, daemon=True).start()
+            else:
+                # Android-to-Android clone
+                self._set_status(f"Indexando memória interna de {src_name}...")
+
+                def _run():
+                    try:
+                        self.transfer_mgr.set_progress_callback(self._on_transfer_progress)
+                        success = self.transfer_mgr.clone_full_storage(
+                            src_serial, tgt_serial,
+                            storage_path="/storage/emulated/0",
+                            ignore_cache=_ic,
+                            ignore_thumbnails=_it,
+                        )
+                        msg = (
+                            "✅ Clone completo concluído com sucesso!"
+                            if success else
+                            "⚠️ Clone concluído com alguns erros. Verifique o log."
+                        )
+                        self.after(0, lambda: messagebox.showinfo("Clone", msg))
+                    except Exception as exc:
+                        self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                    finally:
+                        self.after(0, self._transfer_finished)
+
+                threading.Thread(target=_run, daemon=True).start()
 
         ctk.CTkButton(
             btn_frame,
@@ -2785,6 +3181,8 @@ class ADBToolkitApp(ctk.CTk):
         self.transfer_mgr.cancel()
         self.backup_mgr.cancel()
         self.restore_mgr.cancel()
+        if hasattr(self, "cross_transfer_mgr") and self.cross_transfer_mgr:
+            self.cross_transfer_mgr.cancel()
         self._set_status("Transferência cancelada")
 
     def _transfer_finished(self):
