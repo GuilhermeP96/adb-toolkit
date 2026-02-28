@@ -32,6 +32,28 @@ GOOGLE_USB_DRIVER_URL = (
 # The zip extracts to a folder named 'usb_driver' (not 'google_usb_driver')
 GOOGLE_USB_DRIVER_EXTRACT_NAME = "usb_driver"
 
+# ---------------------------------------------------------------------------
+# Apple / iOS driver constants
+# ---------------------------------------------------------------------------
+APPLE_USB_VID = "0x05AC"  # Apple Inc.
+
+# iTunes installers — the standard way to get Apple Mobile Device Support
+ITUNES_DOWNLOAD_URL = (
+    "https://www.apple.com/itunes/download/win64"
+)
+# Apple Mobile Device driver .inf shipped inside iTunes/Apple Application Support
+APPLE_DRIVER_INF_PATHS = [
+    r"C:\Program Files\Common Files\Apple\Mobile Device Support\Drivers",
+    r"C:\Program Files (x86)\Common Files\Apple\Mobile Device Support\Drivers",
+    r"C:\Program Files\Common Files\Apple\Apple Application Support",
+]
+# Service names related to Apple Mobile Device / iOS connectivity
+APPLE_SERVICE_NAMES = [
+    "Apple Mobile Device Service",
+    "AppleMobileDeviceService",
+    "AppleMobileDevice",
+]
+
 ANDROID_USB_VID_LIST = [
     "0x18D1",  # Google
     "0x04E8",  # Samsung
@@ -808,6 +830,241 @@ class DriverManager:
             if f.suffix.lower() == ".inf":
                 return f
         return None
+
+    # ------------------------------------------------------------------
+    # Apple / iOS driver support
+    # ------------------------------------------------------------------
+    def check_apple_driver_status(self) -> Dict[str, any]:
+        """Check whether Apple Mobile Device drivers are installed (Windows).
+
+        Returns dict with keys:
+            itunes_installed, amds_running, driver_inf_found,
+            ios_devices_detected, error
+        """
+        result: Dict[str, any] = {
+            "itunes_installed": False,
+            "amds_running": False,
+            "driver_inf_found": False,
+            "ios_devices_detected": 0,
+            "error": None,
+        }
+        if os.name != "nt":
+            result["itunes_installed"] = True  # macOS/Linux don't need iTunes
+            result["amds_running"] = True
+            result["driver_inf_found"] = True
+            return result
+
+        try:
+            # 1. Check if iTunes / Apple Mobile Device Support is installed
+            for path in APPLE_DRIVER_INF_PATHS:
+                if Path(path).exists():
+                    result["driver_inf_found"] = True
+                    break
+
+            # Check registry for iTunes
+            try:
+                reg_result = subprocess.run(
+                    [
+                        "reg", "query",
+                        r"HKLM\SOFTWARE\Apple Inc.\Apple Mobile Device Support",
+                        "/ve",
+                    ],
+                    capture_output=True, text=True, timeout=10,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if reg_result.returncode == 0:
+                    result["itunes_installed"] = True
+            except Exception:
+                pass
+
+            # Also check via WMI for iTunes in installed programs
+            if not result["itunes_installed"]:
+                try:
+                    ps_cmd = (
+                        "Get-CimInstance Win32_Product | "
+                        "Where-Object { $_.Name -match 'iTunes|Apple Mobile Device' } | "
+                        "Select-Object Name | ConvertTo-Json -Compress"
+                    )
+                    ps = subprocess.run(
+                        ["powershell", "-NoProfile", "-Command", ps_cmd],
+                        capture_output=True, text=True, timeout=30,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    if ps.stdout.strip() and ps.stdout.strip() != "null":
+                        result["itunes_installed"] = True
+                except Exception:
+                    pass
+
+            # 2. Check if Apple Mobile Device Service is running
+            for svc in APPLE_SERVICE_NAMES:
+                try:
+                    sc_result = subprocess.run(
+                        ["sc", "query", svc],
+                        capture_output=True, text=True, timeout=10,
+                        creationflags=subprocess.CREATE_NO_WINDOW,
+                    )
+                    if "RUNNING" in sc_result.stdout.upper():
+                        result["amds_running"] = True
+                        break
+                except Exception:
+                    pass
+
+            # 3. count iOS devices in Device Manager
+            try:
+                ps_cmd = (
+                    "Get-CimInstance Win32_PnPEntity | "
+                    "Where-Object { $_.DeviceID -match 'VID_05AC' -or "
+                    "$_.Caption -match 'Apple|iPhone|iPad|iPod' } | "
+                    "Measure-Object | Select-Object -ExpandProperty Count"
+                )
+                ps = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_cmd],
+                    capture_output=True, text=True, timeout=15,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                cnt = ps.stdout.strip()
+                if cnt.isdigit():
+                    result["ios_devices_detected"] = int(cnt)
+            except Exception:
+                pass
+
+        except Exception as exc:
+            result["error"] = str(exc)
+            log.warning("Apple driver check error: %s", exc)
+
+        return result
+
+    def install_apple_drivers(
+        self,
+        progress_cb: Optional[Callable[[str, int], None]] = None,
+    ) -> bool:
+        """Attempt to install Apple Mobile Device drivers on Windows.
+
+        Strategy:
+        1. If Apple driver .inf already exists, install via pnputil.
+        2. If iTunes is installed but service not running, start it.
+        3. If nothing found, download iTunes installer and launch it.
+        """
+        if os.name != "nt":
+            if progress_cb:
+                progress_cb("Apple drivers not needed on this platform", 100)
+            return True
+
+        try:
+            status = self.check_apple_driver_status()
+
+            # Case 1: Driver inf already on disk → pnputil install
+            if status["driver_inf_found"]:
+                if progress_cb:
+                    progress_cb("Apple driver found — installing via pnputil...", 20)
+
+                inf_installed = False
+                for drv_dir in APPLE_DRIVER_INF_PATHS:
+                    drv_path = Path(drv_dir)
+                    if not drv_path.exists():
+                        continue
+                    for inf in drv_path.rglob("*.inf"):
+                        try:
+                            res = subprocess.run(
+                                ["pnputil", "/add-driver", str(inf), "/install"],
+                                capture_output=True, text=True, timeout=120,
+                                creationflags=subprocess.CREATE_NO_WINDOW,
+                            )
+                            if res.returncode == 0:
+                                inf_installed = True
+                        except Exception:
+                            pass
+
+                if progress_cb:
+                    progress_cb("Starting Apple Mobile Device Service...", 60)
+
+                # Ensure the service is running
+                self._start_apple_service()
+
+                if progress_cb:
+                    progress_cb("Scanning for new devices...", 80)
+
+                subprocess.run(
+                    ["pnputil", "/scan-devices"],
+                    capture_output=True, text=True, timeout=60,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+
+                if progress_cb:
+                    progress_cb("Apple drivers installed!", 100)
+                return inf_installed or status["amds_running"]
+
+            # Case 2: iTunes installed, service not running
+            if status["itunes_installed"] and not status["amds_running"]:
+                if progress_cb:
+                    progress_cb("Starting Apple Mobile Device Service...", 40)
+                self._start_apple_service()
+                if progress_cb:
+                    progress_cb("Service started!", 100)
+                return True
+
+            # Case 3: Nothing found — download iTunes
+            if progress_cb:
+                progress_cb("Downloading iTunes installer...", 10)
+
+            itunes_exe = self.drivers_dir / "iTunesSetup.exe"
+            if not itunes_exe.exists():
+                try:
+                    urllib.request.urlretrieve(ITUNES_DOWNLOAD_URL, str(itunes_exe))
+                except Exception as exc:
+                    log.warning("iTunes download failed: %s", exc)
+                    # Try Microsoft Store approach
+                    if progress_cb:
+                        progress_cb("Opening iTunes in Microsoft Store...", 50)
+                    try:
+                        subprocess.Popen(
+                            ["start", "ms-windows-store://pdp/?ProductId=9PB2MZ1ZMB1S"],
+                            shell=True,
+                        )
+                        if progress_cb:
+                            progress_cb(
+                                "Microsoft Store opened — install iTunes, then retry.",
+                                100,
+                            )
+                        return False
+                    except Exception:
+                        if progress_cb:
+                            progress_cb(f"Download failed: {exc}", 100)
+                        return False
+
+            if progress_cb:
+                progress_cb("Launching iTunes installer...", 50)
+
+            # Launch iTunes installer (user must complete)
+            subprocess.Popen(
+                [str(itunes_exe)],
+                creationflags=subprocess.CREATE_NEW_CONSOLE,
+            )
+
+            if progress_cb:
+                progress_cb(
+                    "iTunes installer launched — complete installation then retry.",
+                    100,
+                )
+            return True  # installer launched
+
+        except Exception as exc:
+            log.exception("Apple driver install failed: %s", exc)
+            if progress_cb:
+                progress_cb(f"Error: {exc}", 100)
+            return False
+
+    def _start_apple_service(self):
+        """Attempt to start Apple Mobile Device Service."""
+        for svc in APPLE_SERVICE_NAMES:
+            try:
+                subprocess.run(
+                    ["net", "start", svc],
+                    capture_output=True, text=True, timeout=30,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            except Exception:
+                pass
 
     def restart_adb_after_driver(self, adb_path: str):
         """Kill and restart ADB server after driver installation."""

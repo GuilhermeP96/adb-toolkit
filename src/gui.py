@@ -39,6 +39,7 @@ from .accelerator import TransferAccelerator, detect_all_gpus, detect_virtualiza
 from .device_interface import DeviceManager, DevicePlatform, UnifiedDeviceInfo
 from .adb_adapter import ADBAdapter
 from .cross_transfer import CrossPlatformTransferManager, CrossTransferConfig, CrossTransferProgress
+from .i18n import t, set_language, get_language, available_languages, on_language_change
 
 # Optional iOS support
 try:
@@ -115,7 +116,7 @@ class ADBToolkitApp(ctk.CTk):
         self._confirm_dlg = None  # Device confirmation overlay
 
         # Window setup
-        self.title("ADB Toolkit — Backup · Recovery · Transfer")
+        self.title(t("app.window_title"))
         w = config.get("ui.window_width", 1100)
         h = config.get("ui.window_height", 750)
         self.geometry(f"{w}x{h}")
@@ -139,14 +140,14 @@ class ADBToolkitApp(ctk.CTk):
         self.tabview = ctk.CTkTabview(self, corner_radius=10)
         self.tabview.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
-        self._tab_devices = self.tabview.add("📱 Dispositivos")
-        self._tab_cleanup = self.tabview.add("🧹 Limpeza")
-        self._tab_toolbox = self.tabview.add("🧰 ToolBox")
-        self._tab_backup = self.tabview.add("💾 Backup")
-        self._tab_restore = self.tabview.add("♻️ Restaurar")
-        self._tab_transfer = self.tabview.add("🔄 Transferir")
-        self._tab_drivers = self.tabview.add("🔧 Drivers")
-        self._tab_settings = self.tabview.add("⚙️ Configurações")
+        self._tab_devices = self.tabview.add(t("tabs.devices"))
+        self._tab_cleanup = self.tabview.add(t("tabs.cleanup"))
+        self._tab_toolbox = self.tabview.add(t("tabs.toolbox"))
+        self._tab_backup = self.tabview.add(t("tabs.backup"))
+        self._tab_restore = self.tabview.add(t("tabs.restore"))
+        self._tab_transfer = self.tabview.add(t("tabs.transfer"))
+        self._tab_drivers = self.tabview.add(t("tabs.drivers"))
+        self._tab_settings = self.tabview.add(t("tabs.settings"))
 
         self._build_devices_tab()
         self._build_cleanup_tab()
@@ -170,19 +171,19 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             frame,
-            text="🔌 ADB Toolkit",
+            text=t("topbar.title"),
             font=ctk.CTkFont(size=20, weight="bold"),
         ).pack(side="left", padx=16)
 
         self.lbl_connection = ctk.CTkLabel(
             frame,
-            text="Nenhum dispositivo conectado",
+            text=t("topbar.no_device"),
             text_color=COLORS["text_dim"],
         )
         self.lbl_connection.pack(side="left", padx=20)
 
         self.btn_refresh = ctk.CTkButton(
-            frame, text="Atualizar", width=100,
+            frame, text=t("topbar.refresh"), width=100,
             command=self._refresh_devices,
         )
         self.btn_refresh.pack(side="right", padx=8, pady=8)
@@ -197,7 +198,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # Left — status text
         self.lbl_status = ctk.CTkLabel(
-            frame, text="Pronto", anchor="w",
+            frame, text=t("status.ready"), anchor="w",
             font=ctk.CTkFont(size=11),
         )
         self.lbl_status.pack(side="left", padx=12)
@@ -346,8 +347,8 @@ class ADBToolkitApp(ctk.CTk):
         self.transfer_mgr.accelerator.set_gpu_enabled(on)
         # Refresh footer label
         threading.Thread(target=self._init_accel_footer, daemon=True).start()
-        state = "ativada" if on else "desativada"
-        self._set_status(f"Aceleração por GPU {state}")
+        state = t("common.enabled") if on else t("common.disabled")
+        self._set_status(t("status.gpu_toggle", state=state))
 
     def _on_virt_toggle(self):
         """Virtualization toggle callback."""
@@ -355,8 +356,8 @@ class ADBToolkitApp(ctk.CTk):
         self.config.set("virtualization.enabled", on)
         self.transfer_mgr.accelerator.set_virt_enabled(on)
         threading.Thread(target=self._init_accel_footer, daemon=True).start()
-        state = "ativada" if on else "desativada"
-        self._set_status(f"Virtualização {state}")
+        state = t("common.enabled") if on else t("common.disabled")
+        self._set_status(t("settings.virt_status", state=state))
 
     # ==================================================================
     # DEVICES TAB
@@ -370,7 +371,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             list_frame,
-            text="Dispositivos Conectados",
+            text=t("devices.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(12, 4))
 
@@ -379,10 +380,7 @@ class ADBToolkitApp(ctk.CTk):
 
         self.lbl_no_devices = ctk.CTkLabel(
             self.device_list_frame,
-            text="Nenhum dispositivo detectado.\n\n"
-                 "1. Conecte seu dispositivo Android via USB\n"
-                 "2. Ative a 'Depuração USB' nas Opções do Desenvolvedor\n"
-                 "3. Aceite o prompt de depuração no dispositivo",
+            text=t("devices.no_device_instructions"),
             font=ctk.CTkFont(size=13),
             text_color=COLORS["text_dim"],
             justify="center",
@@ -395,13 +393,13 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             details_frame,
-            text="Detalhes do Dispositivo",
+            text=t("devices.details_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
         self.device_details_text = ctk.CTkTextbox(details_frame, height=120)
         self.device_details_text.pack(fill="x", padx=8, pady=(0, 8))
-        self.device_details_text.insert("end", "Selecione um dispositivo acima.")
+        self.device_details_text.insert("end", t("devices.select_device"))
         self.device_details_text.configure(state="disabled")
 
     # ==================================================================
@@ -418,13 +416,13 @@ class ADBToolkitApp(ctk.CTk):
         header.pack(fill="x", padx=4, pady=4)
 
         ctk.CTkLabel(
-            header, text="🧹 Limpeza do Dispositivo",
+            header, text=t("cleanup.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(12, 2))
 
         ctk.CTkLabel(
             header,
-            text="Selecione os modos de limpeza, escaneie para revisar e confirme a execução.",
+            text=t("cleanup.subtitle"),
             font=ctk.CTkFont(size=12),
             text_color=COLORS["text_dim"],
         ).pack(anchor="w", padx=12, pady=(0, 8))
@@ -447,7 +445,7 @@ class ADBToolkitApp(ctk.CTk):
         btn_row.pack(fill="x", padx=12, pady=8)
 
         self.btn_scan_cleanup = ctk.CTkButton(
-            btn_row, text="🔍 Escanear e Estimar",
+            btn_row, text=t("cleanup.btn_scan"),
             command=self._start_cleanup_scan,
             fg_color=COLORS["card"], hover_color=COLORS["accent"],
             width=200,
@@ -455,7 +453,7 @@ class ADBToolkitApp(ctk.CTk):
         self.btn_scan_cleanup.pack(side="left", padx=(0, 8))
 
         self.btn_execute_cleanup = ctk.CTkButton(
-            btn_row, text="🧹 Limpar Agora",
+            btn_row, text=t("cleanup.btn_clean"),
             command=self._start_cleanup_execute,
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
             width=200, state="disabled",
@@ -463,7 +461,7 @@ class ADBToolkitApp(ctk.CTk):
         self.btn_execute_cleanup.pack(side="left", padx=(0, 8))
 
         self.btn_cancel_cleanup = ctk.CTkButton(
-            btn_row, text="❌ Cancelar",
+            btn_row, text=t("cleanup.btn_cancel"),
             command=self._cancel_cleanup,
             fg_color=COLORS["error"], hover_color="#c0392b",
             width=120, state="disabled",
@@ -475,13 +473,13 @@ class ADBToolkitApp(ctk.CTk):
         summary_frame.pack(fill="x", padx=4, pady=4)
 
         ctk.CTkLabel(
-            summary_frame, text="Resumo da Verificação",
+            summary_frame, text=t("cleanup.summary_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
         self.cleanup_summary_text = ctk.CTkTextbox(summary_frame, height=150)
         self.cleanup_summary_text.pack(fill="x", padx=8, pady=(0, 8))
-        self.cleanup_summary_text.insert("end", "Clique em 'Escanear e Estimar' para iniciar.")
+        self.cleanup_summary_text.insert("end", t("cleanup.summary_placeholder"))
         self.cleanup_summary_text.configure(state="disabled")
 
         # State
@@ -509,7 +507,7 @@ class ADBToolkitApp(ctk.CTk):
 
         label_text = MODE_LABELS[mode]
         if mode == CleanupMode.DUPLICATES:
-            label_text += "  ⚠️ (recomendado após demais limpezas)"
+            label_text += "  " + t("cleanup.duplicates_note")
 
         ctk.CTkLabel(
             info_frame, text=label_text,
@@ -567,7 +565,7 @@ class ADBToolkitApp(ctk.CTk):
 
         modes = self._get_enabled_cleanup_modes()
         if not modes:
-            messagebox.showwarning("Limpeza", "Selecione ao menos um modo de limpeza.")
+            messagebox.showwarning(t("cleanup.warn_no_mode_title"), t("cleanup.warn_no_mode_msg"))
             return
 
         self._lock_ui()
@@ -588,10 +586,10 @@ class ADBToolkitApp(ctk.CTk):
                 mode, lambda p, _m=mode: self._on_cleanup_mode_progress(p),
             )
 
-        self._set_status("Escaneando dispositivo…")
+        self._set_status(t("cleanup.scanning"))
         self.cleanup_summary_text.configure(state="normal")
         self.cleanup_summary_text.delete("1.0", "end")
-        self.cleanup_summary_text.insert("end", "⏳ Escaneando…\n")
+        self.cleanup_summary_text.insert("end", t("cleanup.scanning_text") + "\n")
         self.cleanup_summary_text.configure(state="disabled")
 
         def _run():
@@ -621,12 +619,12 @@ class ADBToolkitApp(ctk.CTk):
                     )
                 elif p.phase == "error":
                     widgets["status_lbl"].configure(
-                        text="Erro", text_color=COLORS["error"],
+                        text=t("common.error"), text_color=COLORS["error"],
                     )
                 elif p.phase == "cleaning":
                     if p.bytes_freed > 0:
                         widgets["status_lbl"].configure(
-                            text=f"{format_bytes(p.bytes_freed)} liberados",
+                            text=f"{format_bytes(p.bytes_freed)} {t('common.freed')}",
                             text_color=COLORS["warning"],
                         )
             except Exception:
@@ -641,7 +639,7 @@ class ADBToolkitApp(ctk.CTk):
         # Build summary text
         total_items = 0
         total_bytes = 0
-        lines = ["📊 RESULTADO DA VERIFICAÇÃO\n", "=" * 50 + "\n\n"]
+        lines = [t("cleanup.scan_header") + "\n", "=" * 50 + "\n\n"]
 
         for mode in MODE_ORDER:
             est = estimates.get(mode)
@@ -651,11 +649,11 @@ class ADBToolkitApp(ctk.CTk):
             if est.error:
                 lines.append(f"  ❌ {label}: {est.error}\n")
                 widgets = self._cleanup_mode_rows[mode]
-                widgets["status_lbl"].configure(text="Erro", text_color=COLORS["error"])
+                widgets["status_lbl"].configure(text=t("common.error"), text_color=COLORS["error"])
             else:
                 lines.append(
                     f"  {'✅' if est.total_items else '⭕'} {label}: "
-                    f"{est.total_items} itens  •  {format_bytes(est.total_bytes)}\n"
+                    f"{t('cleanup.mode_items', items=est.total_items, bytes=format_bytes(est.total_bytes))}\n"
                 )
                 total_items += est.total_items
                 total_bytes += est.total_bytes
@@ -663,37 +661,37 @@ class ADBToolkitApp(ctk.CTk):
                 widgets = self._cleanup_mode_rows[mode]
                 if est.total_items:
                     widgets["status_lbl"].configure(
-                        text=f"{est.total_items} itens ({format_bytes(est.total_bytes)})",
+                        text=t("cleanup.mode_items", items=est.total_items, bytes=format_bytes(est.total_bytes)),
                         text_color=COLORS["warning"],
                     )
                 else:
                     widgets["status_lbl"].configure(
-                        text="Limpo ✓", text_color=COLORS["success"],
+                        text=t("cleanup.mode_clean"), text_color=COLORS["success"],
                     )
 
         lines.append(f"\n{'=' * 50}\n")
-        lines.append(f"  TOTAL: {total_items} itens  •  ~{format_bytes(total_bytes)} a liberar\n")
+        lines.append(f"  TOTAL: {total_items} {t('common.items')}  •  ~{format_bytes(total_bytes)} {t('cleanup.bytes_freed', bytes='')}\n")
 
         if total_items > 0:
-            lines.append("\n  👉 Clique em 'Limpar Agora' para executar a limpeza.\n")
+            lines.append(f"\n  {t('cleanup.click_clean')}\n")
             self.btn_execute_cleanup.configure(state="normal")
         else:
-            lines.append("\n  ✅ Nenhum item para limpar. Dispositivo já está limpo!\n")
+            lines.append(f"\n  {t('cleanup.already_clean')}\n")
 
         self.cleanup_summary_text.configure(state="normal")
         self.cleanup_summary_text.delete("1.0", "end")
         self.cleanup_summary_text.insert("end", "".join(lines))
         self.cleanup_summary_text.configure(state="disabled")
-        self._set_status(f"Verificação concluída — {total_items} itens ({format_bytes(total_bytes)})")
+        self._set_status(t("cleanup.scan_done", items=total_items, bytes=format_bytes(total_bytes)))
 
     def _scan_error(self, error: str):
         self._unlock_ui()
         self.btn_cancel_cleanup.configure(state="disabled")
         self.cleanup_summary_text.configure(state="normal")
         self.cleanup_summary_text.delete("1.0", "end")
-        self.cleanup_summary_text.insert("end", f"❌ Erro durante verificação:\n{error}")
+        self.cleanup_summary_text.insert("end", t("cleanup.scan_error_text", error=error))
         self.cleanup_summary_text.configure(state="disabled")
-        self._set_status("Erro na verificação")
+        self._set_status(t("cleanup.scan_error_status"))
 
     def _start_cleanup_execute(self):
         if not self._cleanup_estimates:
@@ -707,10 +705,8 @@ class ADBToolkitApp(ctk.CTk):
         total_items = sum(e.total_items for e in self._cleanup_estimates.values())
         total_bytes = sum(e.total_bytes for e in self._cleanup_estimates.values())
         ok = messagebox.askyesno(
-            "Confirmar Limpeza",
-            f"Tem certeza que deseja remover {total_items} itens "
-            f"(~{format_bytes(total_bytes)})?\n\n"
-            "Esta ação não pode ser desfeita.",
+            t("cleanup.confirm_title"),
+            t("cleanup.confirm_msg", items=total_items, bytes=format_bytes(total_bytes)),
         )
         if not ok:
             return
@@ -723,7 +719,7 @@ class ADBToolkitApp(ctk.CTk):
         for mode in self._cleanup_estimates:
             widgets = self._cleanup_mode_rows[mode]
             widgets["progress_bar"].set(0)
-            widgets["detail_lbl"].configure(text="Aguardando…")
+            widgets["detail_lbl"].configure(text=t("cleanup.waiting"))
 
         # Register progress callbacks again for execution phase
         for mode in self._cleanup_estimates:
@@ -731,7 +727,7 @@ class ADBToolkitApp(ctk.CTk):
                 mode, lambda p, _m=mode: self._on_cleanup_mode_progress(p),
             )
 
-        self._set_status("Executando limpeza…")
+        self._set_status(t("cleanup.executing"))
 
         def _run():
             try:
@@ -753,7 +749,7 @@ class ADBToolkitApp(ctk.CTk):
         total_removed = sum(r.items_removed for r in results.values())
         total_errors = sum(len(r.errors) for r in results.values())
 
-        lines = ["🧹 LIMPEZA CONCLUÍDA\n", "=" * 50 + "\n\n"]
+        lines = [t("cleanup.done_header") + "\n", "=" * 50 + "\n\n"]
 
         for mode in MODE_ORDER:
             res = results.get(mode)
@@ -762,23 +758,23 @@ class ADBToolkitApp(ctk.CTk):
             label = MODE_LABELS[mode]
             if res.errors:
                 lines.append(
-                    f"  ⚠️ {label}: {res.items_removed} removidos, "
-                    f"{format_bytes(res.bytes_freed)} liberados  "
-                    f"({len(res.errors)} erros)\n"
+                    f"  ⚠️ {label}: {res.items_removed} {t('common.removed')}, "
+                    f"{format_bytes(res.bytes_freed)} {t('common.freed')}  "
+                    f"({len(res.errors)} {t('common.errors')})\n"
                 )
             else:
                 lines.append(
-                    f"  ✅ {label}: {res.items_removed} removidos, "
-                    f"{format_bytes(res.bytes_freed)} liberados\n"
+                    f"  ✅ {label}: {res.items_removed} {t('common.removed')}, "
+                    f"{format_bytes(res.bytes_freed)} {t('common.freed')}\n"
                 )
 
         lines.append(f"\n{'=' * 50}\n")
         lines.append(
-            f"  TOTAL: {total_removed} itens removidos  •  "
-            f"~{format_bytes(total_freed)} liberados"
+            f"  TOTAL: {total_removed} {t('common.items')} {t('common.removed')}  •  "
+            f"~{format_bytes(total_freed)} {t('common.freed')}"
         )
         if total_errors:
-            lines.append(f"  •  {total_errors} erros\n")
+            lines.append(f"  •  {total_errors} {t('common.errors')}\n")
         else:
             lines.append("\n")
 
@@ -786,23 +782,20 @@ class ADBToolkitApp(ctk.CTk):
         self.cleanup_summary_text.delete("1.0", "end")
         self.cleanup_summary_text.insert("end", "".join(lines))
         self.cleanup_summary_text.configure(state="disabled")
-        self._set_status(f"Limpeza concluída — {format_bytes(total_freed)} liberados")
+        self._set_status(t("cleanup.done_status", bytes=format_bytes(total_freed)))
 
     def _execute_error(self, error: str):
         self._unlock_ui()
         self.btn_cancel_cleanup.configure(state="disabled")
         self.cleanup_summary_text.configure(state="normal")
         self.cleanup_summary_text.delete("1.0", "end")
-        self.cleanup_summary_text.insert("end", f"❌ Erro durante limpeza:\n{error}")
+        self.cleanup_summary_text.insert("end", t("cleanup.exec_error_text", error=error))
         self.cleanup_summary_text.configure(state="disabled")
-        self._set_status("Erro na limpeza")
+        self._set_status(t("cleanup.exec_error_status"))
 
     def _cancel_cleanup(self):
         self.cleanup_mgr.cancel()
-        self._set_status("Limpeza cancelada")
-
-        self.cleanup_mgr.cancel()
-        self._set_status("Limpeza cancelada")
+        self._set_status(t("cleanup.cancelled"))
 
     # ==================================================================
     # TOOLBOX TAB
@@ -829,65 +822,65 @@ class ADBToolkitApp(ctk.CTk):
         hdr = ctk.CTkFrame(scroll)
         hdr.pack(fill="x", padx=4, pady=4)
         ctk.CTkLabel(
-            hdr, text="🧰 ToolBox — Gestão do Dispositivo",
+            hdr, text=t("toolbox.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(12, 2))
         ctk.CTkLabel(
             hdr,
-            text="Ferramentas de diagnóstico, otimização e gerenciamento via ADB.",
+            text=t("toolbox.subtitle"),
             font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"],
         ).pack(anchor="w", padx=12, pady=(0, 8))
 
         # ── Device Info section ──
-        self._tb_section(scroll, "📋 Informações do Dispositivo")
+        self._tb_section(scroll, t("toolbox.section.info"))
 
         info_btns = ctk.CTkFrame(scroll, fg_color="transparent")
         info_btns.pack(fill="x", padx=16, pady=4)
 
         self.btn_tb_device_info = ctk.CTkButton(
-            info_btns, text="📱 Info Geral",
+            info_btns, text=t("toolbox.btn.device_info"),
             command=self._tb_device_info, width=150,
         )
         self.btn_tb_device_info.pack(side="left", padx=4)
 
         self.btn_tb_battery = ctk.CTkButton(
-            info_btns, text="🔋 Bateria",
+            info_btns, text=t("toolbox.btn.battery"),
             command=self._tb_battery_info, width=150,
         )
         self.btn_tb_battery.pack(side="left", padx=4)
 
         self.btn_tb_storage = ctk.CTkButton(
-            info_btns, text="💾 Armazenamento",
+            info_btns, text=t("toolbox.btn.storage"),
             command=self._tb_storage_info, width=150,
         )
         self.btn_tb_storage.pack(side="left", padx=4)
 
         self.btn_tb_network = ctk.CTkButton(
-            info_btns, text="🌐 Rede",
+            info_btns, text=t("toolbox.btn.network"),
             command=self._tb_network_info, width=150,
         )
         self.btn_tb_network.pack(side="left", padx=4)
 
         # ── App Management section ──
-        self._tb_section(scroll, "📦 Gerenciamento de Apps")
+        self._tb_section(scroll, t("toolbox.section.apps"))
 
         app_row1 = ctk.CTkFrame(scroll, fg_color="transparent")
         app_row1.pack(fill="x", padx=16, pady=4)
 
         self.btn_tb_list_apps = ctk.CTkButton(
-            app_row1, text="📋 Listar Apps",
+            app_row1, text=t("toolbox.btn.list_apps"),
             command=self._tb_list_apps, width=150,
         )
         self.btn_tb_list_apps.pack(side="left", padx=4)
 
         self.btn_tb_clear_all_cache = ctk.CTkButton(
-            app_row1, text="🧹 Limpar Todo Cache",
+            app_row1, text=t("toolbox.btn.clear_all_cache"),
             command=self._tb_clear_all_cache, width=160,
         )
         self.btn_tb_clear_all_cache.pack(side="left", padx=4)
 
         self.btn_tb_force_stop_all = ctk.CTkButton(
-            app_row1, text="⏹ Encerrar Tudo",
+            app_row1, text=t("toolbox.btn.force_stop_all"),
             command=self._tb_force_stop_all, width=150,
         )
         self.btn_tb_force_stop_all.pack(side="left", padx=4)
@@ -895,38 +888,38 @@ class ADBToolkitApp(ctk.CTk):
         # Single-app operations
         app_single = ctk.CTkFrame(scroll, fg_color="transparent")
         app_single.pack(fill="x", padx=16, pady=4)
-        ctk.CTkLabel(app_single, text="Pacote:").pack(side="left")
+        ctk.CTkLabel(app_single, text=t("toolbox.label.package")).pack(side="left")
         self.entry_tb_package = ctk.CTkEntry(app_single, width=300, placeholder_text="com.example.app")
         self.entry_tb_package.pack(side="left", padx=4)
 
         self.btn_tb_uninstall = ctk.CTkButton(
-            app_single, text="🗑️ Desinstalar", width=120,
+            app_single, text=t("toolbox.btn.uninstall"), width=120,
             fg_color=COLORS["error"], hover_color="#c0392b",
             command=self._tb_uninstall_app,
         )
         self.btn_tb_uninstall.pack(side="left", padx=4)
 
         self.btn_tb_force_stop = ctk.CTkButton(
-            app_single, text="⏹ Encerrar", width=100,
+            app_single, text=t("toolbox.btn.force_stop"), width=100,
             command=self._tb_force_stop_app,
         )
         self.btn_tb_force_stop.pack(side="left", padx=4)
 
         self.btn_tb_clear_data = ctk.CTkButton(
-            app_single, text="🔄 Limpar Dados", width=120,
+            app_single, text=t("toolbox.btn.clear_data"), width=120,
             fg_color=COLORS["warning"], hover_color="#e5a100",
             command=self._tb_clear_data,
         )
         self.btn_tb_clear_data.pack(side="left", padx=4)
 
         # ── Performance section ──
-        self._tb_section(scroll, "⚡ Performance e Otimização")
+        self._tb_section(scroll, t("toolbox.section.perf"))
 
         perf_btns = ctk.CTkFrame(scroll, fg_color="transparent")
         perf_btns.pack(fill="x", padx=16, pady=4)
 
         self.btn_tb_kill_bg = ctk.CTkButton(
-            perf_btns, text="💀 Encerrar Background",
+            perf_btns, text=t("toolbox.btn.kill_bg"),
             command=self._tb_kill_background, width=180,
         )
         self.btn_tb_kill_bg.pack(side="left", padx=4)
@@ -938,7 +931,7 @@ class ADBToolkitApp(ctk.CTk):
         self.btn_tb_fstrim.pack(side="left", padx=4)
 
         self.btn_tb_reset_battery = ctk.CTkButton(
-            perf_btns, text="🔋 Reset Stats Bateria",
+            perf_btns, text=t("toolbox.btn.reset_battery"),
             command=self._tb_reset_battery, width=160,
         )
         self.btn_tb_reset_battery.pack(side="left", padx=4)
@@ -947,57 +940,57 @@ class ADBToolkitApp(ctk.CTk):
         perf_btns2.pack(fill="x", padx=16, pady=4)
 
         # Animation scale
-        ctk.CTkLabel(perf_btns2, text="Animações:").pack(side="left")
+        ctk.CTkLabel(perf_btns2, text=t("toolbox.label.animations")).pack(side="left")
         self.tb_anim_var = ctk.StringVar(value="1.0")
         ctk.CTkOptionMenu(
             perf_btns2, values=["0", "0.25", "0.5", "1.0"],
             variable=self.tb_anim_var, width=80,
         ).pack(side="left", padx=4)
         self.btn_tb_set_anim = ctk.CTkButton(
-            perf_btns2, text="Aplicar", width=80,
+            perf_btns2, text=t("toolbox.btn.apply_anim"), width=80,
             command=self._tb_set_animation,
         )
         self.btn_tb_set_anim.pack(side="left", padx=4)
 
         # ── Screen Capture section ──
-        self._tb_section(scroll, "📸 Captura de Tela")
+        self._tb_section(scroll, t("toolbox.section.capture"))
 
         cap_btns = ctk.CTkFrame(scroll, fg_color="transparent")
         cap_btns.pack(fill="x", padx=16, pady=4)
 
         self.btn_tb_screenshot = ctk.CTkButton(
-            cap_btns, text="📷 Screenshot",
+            cap_btns, text=t("toolbox.btn.screenshot"),
             command=self._tb_screenshot, width=150,
         )
         self.btn_tb_screenshot.pack(side="left", padx=4)
 
         self.btn_tb_screenrecord = ctk.CTkButton(
-            cap_btns, text="🎬 Gravar Tela (30s)",
+            cap_btns, text=t("toolbox.btn.screenrecord"),
             command=self._tb_screenrecord, width=180,
         )
         self.btn_tb_screenrecord.pack(side="left", padx=4)
 
         self.btn_tb_open_output = ctk.CTkButton(
-            cap_btns, text="📂 Abrir Pasta", width=120,
+            cap_btns, text=t("toolbox.btn.open_output"), width=120,
             command=lambda: open_folder(str(self.toolbox_mgr.output_dir)),
         )
         self.btn_tb_open_output.pack(side="left", padx=4)
 
         # ── WiFi ADB section ──
-        self._tb_section(scroll, "📶 WiFi ADB")
+        self._tb_section(scroll, t("toolbox.section.wifi"))
 
         wifi_btns = ctk.CTkFrame(scroll, fg_color="transparent")
         wifi_btns.pack(fill="x", padx=16, pady=4)
 
         self.btn_tb_wifi_on = ctk.CTkButton(
-            wifi_btns, text="📶 Ativar WiFi ADB",
+            wifi_btns, text=t("toolbox.btn.wifi_on"),
             command=self._tb_enable_wifi_adb, width=160,
             fg_color=COLORS["success"], hover_color="#05c090",
         )
         self.btn_tb_wifi_on.pack(side="left", padx=4)
 
         self.btn_tb_wifi_off = ctk.CTkButton(
-            wifi_btns, text="🔌 Voltar para USB",
+            wifi_btns, text=t("toolbox.btn.wifi_off"),
             command=self._tb_disable_wifi_adb, width=160,
         )
         self.btn_tb_wifi_off.pack(side="left", padx=4)
@@ -1009,21 +1002,21 @@ class ADBToolkitApp(ctk.CTk):
         self.lbl_tb_wifi_status.pack(side="left", padx=8)
 
         # ── Developer Tools section ──
-        self._tb_section(scroll, "🛠️ Ferramentas de Desenvolvedor")
+        self._tb_section(scroll, t("toolbox.section.dev"))
 
         dev_btns = ctk.CTkFrame(scroll, fg_color="transparent")
         dev_btns.pack(fill="x", padx=16, pady=4)
 
         self.tb_stay_awake_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
-            dev_btns, text="Tela sempre ligada (carregando)",
+            dev_btns, text=t("toolbox.btn.stay_awake"),
             variable=self.tb_stay_awake_var,
             command=self._tb_toggle_stay_awake,
         ).pack(side="left", padx=4)
 
         self.tb_show_touches_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
-            dev_btns, text="Mostrar toques",
+            dev_btns, text=t("toolbox.btn.show_touches"),
             variable=self.tb_show_touches_var,
             command=self._tb_toggle_show_touches,
         ).pack(side="left", padx=16)
@@ -1032,85 +1025,85 @@ class ADBToolkitApp(ctk.CTk):
         dev_btns2.pack(fill="x", padx=16, pady=4)
 
         self.btn_tb_shell = ctk.CTkButton(
-            dev_btns2, text="💻 Abrir Shell (ADB)",
+            dev_btns2, text=t("toolbox.btn.shell"),
             command=self._tb_open_shell, width=180,
             fg_color=COLORS["success"], hover_color="#05c090",
         )
         self.btn_tb_shell.pack(side="left", padx=4)
 
         # ── Reboot section ──
-        self._tb_section(scroll, "🔄 Reiniciar Dispositivo")
+        self._tb_section(scroll, t("toolbox.section.reboot"))
 
         reboot_btns = ctk.CTkFrame(scroll, fg_color="transparent")
         reboot_btns.pack(fill="x", padx=16, pady=4)
 
         self.btn_tb_reboot = ctk.CTkButton(
-            reboot_btns, text="🔄 Normal",
+            reboot_btns, text=t("toolbox.btn.reboot_normal"),
             command=self._tb_reboot_normal, width=120,
         )
         self.btn_tb_reboot.pack(side="left", padx=4)
 
         self.btn_tb_reboot_recovery = ctk.CTkButton(
-            reboot_btns, text="🔧 Recovery",
+            reboot_btns, text=t("toolbox.btn.reboot_recovery"),
             command=self._tb_reboot_recovery, width=120,
             fg_color=COLORS["warning"], hover_color="#e5a100",
         )
         self.btn_tb_reboot_recovery.pack(side="left", padx=4)
 
         self.btn_tb_reboot_bootloader = ctk.CTkButton(
-            reboot_btns, text="⚙️ Bootloader",
+            reboot_btns, text=t("toolbox.btn.reboot_bootloader"),
             command=self._tb_reboot_bootloader, width=120,
             fg_color=COLORS["warning"], hover_color="#e5a100",
         )
         self.btn_tb_reboot_bootloader.pack(side="left", padx=4)
 
         self.btn_tb_reboot_fastboot = ctk.CTkButton(
-            reboot_btns, text="⚡ Fastboot",
+            reboot_btns, text=t("toolbox.btn.reboot_fastboot"),
             command=self._tb_reboot_fastboot, width=120,
             fg_color=COLORS["warning"], hover_color="#e5a100",
         )
         self.btn_tb_reboot_fastboot.pack(side="left", padx=4)
 
         self.btn_tb_shutdown = ctk.CTkButton(
-            reboot_btns, text="⏻ Desligar",
+            reboot_btns, text=t("toolbox.btn.shutdown"),
             command=self._tb_shutdown, width=120,
             fg_color=COLORS["error"], hover_color="#c0392b",
         )
         self.btn_tb_shutdown.pack(side="left", padx=4)
 
         # ── Logcat section ──
-        self._tb_section(scroll, "📜 Logcat")
+        self._tb_section(scroll, t("toolbox.section.logcat"))
 
         log_btns = ctk.CTkFrame(scroll, fg_color="transparent")
         log_btns.pack(fill="x", padx=16, pady=4)
 
         self.btn_tb_logcat = ctk.CTkButton(
-            log_btns, text="📜 Capturar Logcat",
+            log_btns, text=t("toolbox.btn.logcat"),
             command=self._tb_capture_logcat, width=160,
         )
         self.btn_tb_logcat.pack(side="left", padx=4)
 
         self.btn_tb_clear_logcat = ctk.CTkButton(
-            log_btns, text="🗑️ Limpar Buffer",
+            log_btns, text=t("toolbox.btn.clear_logcat"),
             command=self._tb_clear_logcat, width=140,
         )
         self.btn_tb_clear_logcat.pack(side="left", padx=4)
 
-        ctk.CTkLabel(log_btns, text="Filtro:").pack(side="left", padx=(8, 2))
+        ctk.CTkLabel(log_btns, text=t("toolbox.label.filter")).pack(side="left", padx=(8, 2))
         self.entry_tb_logcat_filter = ctk.CTkEntry(
-            log_btns, width=200, placeholder_text="Tag (ex: ActivityManager)",
+            log_btns, width=200, placeholder_text=t("toolbox.placeholder.filter"),
         )
         self.entry_tb_logcat_filter.pack(side="left", padx=4)
 
         # ── Output console (right column) ──
         ctk.CTkLabel(
-            right_frame, text="📋 Saída",
+            right_frame, text=t("toolbox.output_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
         self.tb_output = ctk.CTkTextbox(right_frame, font=ctk.CTkFont(family="Consolas", size=11))
         self.tb_output.pack(fill="both", expand=True, padx=8, pady=(0, 4))
-        self.tb_output.insert("end", "Selecione uma ferramenta acima para começar.\n")
+        self.tb_output.insert("end", t("toolbox.output_placeholder") + "\n")
         self.tb_output.configure(state="disabled")
 
         # Progress bar
@@ -1150,28 +1143,28 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("Coletando informações do dispositivo…", clear=True)
+        self._tb_write(t("toolbox.msg.collecting_info"), clear=True)
 
         def _run():
             try:
                 info = self.toolbox_mgr.get_device_overview(serial)
                 lines = [
-                    "═══ Informações do Dispositivo ═══",
-                    f"  Modelo:       {info.manufacturer} {info.model}",
-                    f"  Marca:        {info.brand}",
-                    f"  Android:      {info.android_version}  (SDK {info.sdk_level})",
-                    f"  Build:        {info.build_number}",
-                    f"  Segurança:    {info.security_patch}",
-                    f"  Kernel:       {info.kernel}",
-                    f"  CPU:          {info.cpu_hardware or info.cpu_abi}  ({info.cpu_cores} cores)",
-                    f"  RAM:          {info.ram_total_mb} MB total, {info.ram_available_mb} MB livre",
-                    f"  Tela:         {info.display_resolution}  ({info.display_density} DPI)",
-                    f"  Serial:       {info.serial_number}",
-                    f"  Uptime:       {info.uptime}",
+                    t("toolbox.msg.info_header"),
+                    f"  {t('toolbox.msg.model')}       {info.manufacturer} {info.model}",
+                    f"  {t('toolbox.msg.brand')}        {info.brand}",
+                    f"  {t('toolbox.msg.android')}      {info.android_version}  (SDK {info.sdk_level})",
+                    f"  {t('toolbox.msg.build')}        {info.build_number}",
+                    f"  {t('toolbox.msg.security')}    {info.security_patch}",
+                    f"  {t('toolbox.msg.kernel')}       {info.kernel}",
+                    f"  {t('toolbox.msg.cpu')}          {info.cpu_hardware or info.cpu_abi}  ({info.cpu_cores} cores)",
+                    f"  {t('toolbox.msg.ram')}          {t('toolbox.msg.ram_detail', total=info.ram_total_mb, free=info.ram_available_mb)}",
+                    f"  {t('toolbox.msg.display')}         {info.display_resolution}  ({info.display_density} DPI)",
+                    f"  {t('toolbox.msg.serial')}       {info.serial_number}",
+                    f"  {t('toolbox.msg.uptime')}       {info.uptime}",
                 ]
                 self._tb_write("\n".join(lines), clear=True)
             except Exception as exc:
-                self._tb_write(f"Erro: {exc}", clear=True)
+                self._tb_write(f"{t('toolbox.msg.error', exc=exc)}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1179,29 +1172,29 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("Lendo informações da bateria…", clear=True)
+        self._tb_write(t("toolbox.msg.reading_battery"), clear=True)
 
         def _run():
             try:
                 b = self.toolbox_mgr.get_battery_info(serial)
                 lines = [
-                    "═══ Bateria ═══",
-                    f"  Nível:        {b.level}%",
-                    f"  Status:       {b.status}",
-                    f"  Saúde:        {b.health}",
-                    f"  Temperatura:  {b.temperature:.1f} °C",
-                    f"  Tensão:       {b.voltage:.2f} V",
-                    f"  Tecnologia:   {b.technology}",
-                    f"  Alimentação:  {b.plugged}",
+                    t("toolbox.msg.battery_header"),
+                    f"  {t('toolbox.msg.battery_level')}        {b.level}%",
+                    f"  {t('toolbox.msg.battery_status')}       {b.status}",
+                    f"  {t('toolbox.msg.battery_health')}        {b.health}",
+                    f"  {t('toolbox.msg.battery_temp')}  {b.temperature:.1f} °C",
+                    f"  {t('toolbox.msg.battery_voltage')}       {b.voltage:.2f} V",
+                    f"  {t('toolbox.msg.battery_tech')}   {b.technology}",
+                    f"  {t('toolbox.msg.battery_power')}  {b.plugged}",
                 ]
                 if b.current_now:
                     current_ma = b.current_now / 1000
-                    lines.append(f"  Corrente:     {current_ma:.0f} mA")
+                    lines.append(f"  {t('toolbox.msg.battery_current')}     {current_ma:.0f} mA")
                 if b.capacity:
-                    lines.append(f"  Capacidade:   {b.capacity} mAh")
+                    lines.append(f"  {t('toolbox.msg.battery_capacity')}   {b.capacity} mAh")
                 self._tb_write("\n".join(lines), clear=True)
             except Exception as exc:
-                self._tb_write(f"Erro: {exc}", clear=True)
+                self._tb_write(f"{t('common.error')}: {exc}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1209,13 +1202,13 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("Analisando armazenamento…", clear=True)
+        self._tb_write(t("toolbox.msg.reading_storage"), clear=True)
 
         def _run():
             try:
                 parts = self.toolbox_mgr.get_storage_info(serial)
-                lines = ["═══ Armazenamento ═══"]
-                lines.append(f"  {'Partição':<20} {'Total':>8} {'Usado':>8} {'Livre':>8} {'Uso':>6}")
+                lines = [t("toolbox.msg.storage_header")]
+                lines.append(f"  {t('toolbox.msg.storage_partition'):<20} {t('common.total'):>8} {t('toolbox.msg.storage_used'):>8} {t('toolbox.msg.storage_free'):>8} {t('toolbox.msg.storage_usage'):>6}")
                 lines.append("  " + "─" * 56)
                 for p in parts:
                     lines.append(
@@ -1224,7 +1217,7 @@ class ADBToolkitApp(ctk.CTk):
                     )
                 self._tb_write("\n".join(lines), clear=True)
             except Exception as exc:
-                self._tb_write(f"Erro: {exc}", clear=True)
+                self._tb_write(f"{t('common.error')}: {exc}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1232,22 +1225,22 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("Obtendo informações de rede…", clear=True)
+        self._tb_write(t("toolbox.msg.reading_network"), clear=True)
 
         def _run():
             try:
                 net = self.toolbox_mgr.get_network_info(serial)
                 lines = [
-                    "═══ Rede ═══",
+                    t("toolbox.msg.network_header"),
                     f"  IP WiFi:      {net.get('ip_wifi', 'N/A')}",
                     f"  SSID:         {net.get('ssid', 'N/A')}",
-                    f"  Dados Móveis: {net.get('mobile_type', 'N/A')}",
+                    f"  {t('toolbox.msg.net_mobile')}: {net.get('mobile_type', 'N/A')}",
                     f"  Bluetooth:    {net.get('bluetooth', 'N/A')}",
-                    f"  Modo Avião:   {net.get('airplane_mode', 'N/A')}",
+                    f"  {t('toolbox.msg.net_airplane')}:   {net.get('airplane_mode', 'N/A')}",
                 ]
                 self._tb_write("\n".join(lines), clear=True)
             except Exception as exc:
-                self._tb_write(f"Erro: {exc}", clear=True)
+                self._tb_write(f"{t('common.error')}: {exc}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1256,18 +1249,18 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("Listando aplicativos instalados…", clear=True)
+        self._tb_write(t("toolbox.msg.listing_apps"), clear=True)
 
         def _run():
             try:
                 apps = self.toolbox_mgr.list_apps(serial)
-                lines = [f"═══ {len(apps)} Apps Instalados ═══"]
+                lines = [f"═══ {len(apps)} {t('toolbox.msg.apps_count', count=len(apps))} ═══"]
                 for a in apps:
                     ver = f" v{a.version_name}" if a.version_name else ""
                     lines.append(f"  {a.package}{ver}")
                 self._tb_write("\n".join(lines), clear=True)
             except Exception as exc:
-                self._tb_write(f"Erro: {exc}", clear=True)
+                self._tb_write(f"{t('common.error')}: {exc}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1275,7 +1268,7 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("Limpando cache de todos os apps…", clear=True)
+        self._tb_write(t("toolbox.msg.clearing_cache"), clear=True)
         self.tb_progress.set(0)
 
         def _progress(p: ToolboxProgress):
@@ -1286,10 +1279,10 @@ class ADBToolkitApp(ctk.CTk):
         def _run():
             try:
                 count = self.toolbox_mgr.clear_all_apps_cache(serial, _progress)
-                self._tb_write(f"\n✅ Cache limpo para {count} aplicativos.")
+                self._tb_write(f"\n{t('toolbox.msg.cache_cleared', count=count)}")
                 self._safe_after(0, lambda: self.tb_progress.set(1))
             except Exception as exc:
-                self._tb_write(f"Erro: {exc}")
+                self._tb_write(f"{t('common.error')}: {exc}")
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1297,7 +1290,7 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("Encerrando todos os apps de terceiros…", clear=True)
+        self._tb_write(t("toolbox.msg.stopping_all"), clear=True)
         self.tb_progress.set(0)
 
         def _progress(p: ToolboxProgress):
@@ -1306,10 +1299,10 @@ class ADBToolkitApp(ctk.CTk):
         def _run():
             try:
                 count = self.toolbox_mgr.bulk_force_stop(serial, _progress)
-                self._tb_write(f"✅ {count} aplicativos encerrados.", clear=True)
+                self._tb_write(t("toolbox.msg.all_stopped", count=count), clear=True)
                 self._safe_after(0, lambda: self.tb_progress.set(1))
             except Exception as exc:
-                self._tb_write(f"Erro: {exc}")
+                self._tb_write(f"{t('common.error')}: {exc}")
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1319,9 +1312,9 @@ class ADBToolkitApp(ctk.CTk):
             return
         pkg = self.entry_tb_package.get().strip()
         if not pkg:
-            self._tb_write("⚠️ Digite o nome do pacote.", clear=True)
+            self._tb_write(t("toolbox.msg.no_package"), clear=True)
             return
-        if not messagebox.askyesno("Desinstalar", f"Desinstalar {pkg}?"):
+        if not messagebox.askyesno(t("toolbox.msg.uninstall_confirm_title"), t("toolbox.msg.uninstall_confirm_msg", pkg=pkg)):
             return
 
         def _run():
@@ -1337,12 +1330,12 @@ class ADBToolkitApp(ctk.CTk):
             return
         pkg = self.entry_tb_package.get().strip()
         if not pkg:
-            self._tb_write("⚠️ Digite o nome do pacote.", clear=True)
+            self._tb_write(t("toolbox.msg.no_package"), clear=True)
             return
 
         def _run():
             self.toolbox_mgr.force_stop_app(serial, pkg)
-            self._tb_write(f"⏹ {pkg} encerrado.", clear=True)
+            self._tb_write(t("toolbox.msg.app_stopped", pkg=pkg), clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1352,9 +1345,9 @@ class ADBToolkitApp(ctk.CTk):
             return
         pkg = self.entry_tb_package.get().strip()
         if not pkg:
-            self._tb_write("⚠️ Digite o nome do pacote.", clear=True)
+            self._tb_write(t("toolbox.msg.no_package"), clear=True)
             return
-        if not messagebox.askyesno("Limpar Dados", f"Limpar TODOS os dados de {pkg}?\nIsso inclui cache, preferências e bancos de dados."):
+        if not messagebox.askyesno(t("toolbox.msg.clearing_data_confirm_title"), t("toolbox.msg.clearing_data_confirm_msg", pkg=pkg)):
             return
 
         def _run():
@@ -1374,8 +1367,8 @@ class ADBToolkitApp(ctk.CTk):
             count = self.toolbox_mgr.kill_background_apps(serial)
             procs = self.toolbox_mgr.get_running_processes_count(serial)
             self._tb_write(
-                f"💀 Processos em background encerrados.\n"
-                f"   Processos ativos restantes: {procs}",
+                f"💀 {t('toolbox.msg.bg_killed')}\n"
+                f"   {t('toolbox.msg.running_processes')}: {procs}",
                 clear=True,
             )
 
@@ -1385,7 +1378,7 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("Executando FSTRIM…", clear=True)
+        self._tb_write(t("toolbox.msg.running_fstrim"), clear=True)
 
         def _run():
             result = self.toolbox_mgr.run_fstrim(serial)
@@ -1401,7 +1394,7 @@ class ADBToolkitApp(ctk.CTk):
         def _run():
             ok = self.toolbox_mgr.reset_battery_stats(serial)
             icon = "✅" if ok else "❌"
-            self._tb_write(f"{icon} Estatísticas de bateria resetadas.", clear=True)
+            self._tb_write(f"{icon} {t('toolbox.msg.battery_reset')}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1416,8 +1409,8 @@ class ADBToolkitApp(ctk.CTk):
 
         def _run():
             self.toolbox_mgr.set_animation_scale(serial, scale)
-            label = "desativadas" if scale == 0 else f"escala {scale}x"
-            self._tb_write(f"⚡ Animações: {label}", clear=True)
+            label = t("common.disabled") if scale == 0 else f"{scale}x"
+            self._tb_write(t("toolbox.msg.animation_set", scale=label), clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1426,14 +1419,14 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("📷 Capturando screenshot…", clear=True)
+        self._tb_write(t("toolbox.msg.taking_screenshot"), clear=True)
 
         def _run():
             ok, path = self.toolbox_mgr.take_screenshot(serial)
             if ok:
-                self._tb_write(f"✅ Screenshot salvo: {path}")
+                self._tb_write(t("toolbox.msg.screenshot_saved", path=path))
             else:
-                self._tb_write("❌ Falha ao capturar screenshot.")
+                self._tb_write(t("toolbox.msg.screenshot_failed"))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1441,14 +1434,14 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("🎬 Gravando tela por 30 segundos…", clear=True)
+        self._tb_write(t("toolbox.msg.recording_screen"), clear=True)
 
         def _run():
             ok, path = self.toolbox_mgr.start_screenrecord(serial, duration=30)
             if ok:
-                self._tb_write(f"✅ Gravação salva: {path}")
+                self._tb_write(t("toolbox.msg.screen_recorded", path=path))
             else:
-                self._tb_write("❌ Falha ao gravar tela.")
+                self._tb_write(t("toolbox.msg.screen_record_failed"))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1457,19 +1450,19 @@ class ADBToolkitApp(ctk.CTk):
         serial = self._tb_serial()
         if not serial:
             return
-        self._tb_write("📶 Ativando WiFi ADB…", clear=True)
+        self._tb_write(t("toolbox.msg.enabling_wifi"), clear=True)
 
         def _run():
             ok, addr = self.toolbox_mgr.enable_wifi_adb(serial)
             if ok:
-                self._tb_write(f"✅ WiFi ADB ativo em {addr}")
+                self._tb_write(t("toolbox.msg.wifi_enabled", ip=addr))
                 self._safe_after(0, lambda: self.lbl_tb_wifi_status.configure(
-                    text=f"Conectado: {addr}", text_color=COLORS["success"],
+                    text=f"{t('toolbox.msg.wifi_connected')}: {addr}", text_color=COLORS["success"],
                 ))
             else:
                 self._tb_write(f"❌ {addr}")
                 self._safe_after(0, lambda: self.lbl_tb_wifi_status.configure(
-                    text="Falha", text_color=COLORS["error"],
+                    text=t("toolbox.msg.wifi_failed"), text_color=COLORS["error"],
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -1482,7 +1475,7 @@ class ADBToolkitApp(ctk.CTk):
         def _run():
             ok = self.toolbox_mgr.disable_wifi_adb(serial)
             icon = "✅" if ok else "❌"
-            self._tb_write(f"{icon} Modo USB restaurado.", clear=True)
+            self._tb_write(f"{icon} {t('toolbox.msg.wifi_disabled')}", clear=True)
             self._safe_after(0, lambda: self.lbl_tb_wifi_status.configure(text=""))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -1496,8 +1489,8 @@ class ADBToolkitApp(ctk.CTk):
 
         def _run():
             self.toolbox_mgr.toggle_stay_awake(serial, on)
-            state = "ativada" if on else "desativada"
-            self._tb_write(f"🖥️ Tela sempre ligada: {state}", clear=True)
+            state = t("common.enabled") if on else t("common.disabled")
+            self._tb_write(f"🖥️ {t('toolbox.msg.stay_awake_on') if on else t('toolbox.msg.stay_awake_off')}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1509,8 +1502,8 @@ class ADBToolkitApp(ctk.CTk):
 
         def _run():
             self.toolbox_mgr.toggle_show_touches(serial, on)
-            state = "ativado" if on else "desativado"
-            self._tb_write(f"👆 Mostrar toques: {state}", clear=True)
+            state = t("common.enabled") if on else t("common.disabled")
+            self._tb_write(f"👆 {t('toolbox.msg.show_touches_on') if on else t('toolbox.msg.show_touches_off')}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1520,7 +1513,7 @@ class ADBToolkitApp(ctk.CTk):
             return
         adb = self.adb.adb_path
         if not adb:
-            self._tb_write("⚠️ Caminho do ADB não configurado.", clear=True)
+            self._tb_write(t("toolbox.msg.shell_no_adb"), clear=True)
             return
         cmd = [adb, "-s", serial, "shell"]
         try:
@@ -1529,52 +1522,52 @@ class ADBToolkitApp(ctk.CTk):
                 creationflags=subprocess.CREATE_NEW_CONSOLE,
             )
             self._tb_write(
-                f"💻 Shell ADB aberto para {serial} em nova janela.",
+                t("toolbox.msg.shell_opened", serial=serial),
                 clear=True,
             )
         except Exception as exc:
-            self._tb_write(f"Erro ao abrir shell: {exc}", clear=True)
+            self._tb_write(t("toolbox.msg.shell_error", exc=exc), clear=True)
 
     # -- Reboot callbacks ----------------------------------------------------
     def _tb_reboot_normal(self):
         serial = self._tb_serial()
         if not serial:
             return
-        if messagebox.askyesno("Reiniciar", "Reiniciar o dispositivo?"):
+        if messagebox.askyesno(t("toolbox.msg.reboot_confirm_title"), t("toolbox.msg.reboot_confirm_msg")):
             self.toolbox_mgr.reboot_normal(serial)
-            self._tb_write("🔄 Dispositivo reiniciando…", clear=True)
+            self._tb_write(t("toolbox.msg.rebooting"), clear=True)
 
     def _tb_reboot_recovery(self):
         serial = self._tb_serial()
         if not serial:
             return
-        if messagebox.askyesno("Recovery", "Reiniciar em modo Recovery?"):
+        if messagebox.askyesno(t("toolbox.msg.recovery_confirm_title"), t("toolbox.msg.recovery_confirm_msg")):
             self.toolbox_mgr.reboot_recovery(serial)
-            self._tb_write("🔧 Reiniciando em Recovery…", clear=True)
+            self._tb_write(t("toolbox.msg.recovery_rebooting"), clear=True)
 
     def _tb_reboot_bootloader(self):
         serial = self._tb_serial()
         if not serial:
             return
-        if messagebox.askyesno("Bootloader", "Reiniciar em modo Bootloader?"):
+        if messagebox.askyesno(t("toolbox.msg.bootloader_confirm_title"), t("toolbox.msg.bootloader_confirm_msg")):
             self.toolbox_mgr.reboot_bootloader(serial)
-            self._tb_write("⚙️ Reiniciando em Bootloader…", clear=True)
+            self._tb_write(t("toolbox.msg.bootloader_rebooting"), clear=True)
 
     def _tb_reboot_fastboot(self):
         serial = self._tb_serial()
         if not serial:
             return
-        if messagebox.askyesno("Fastboot", "Reiniciar em modo Fastboot?"):
+        if messagebox.askyesno(t("toolbox.msg.fastboot_confirm_title"), t("toolbox.msg.fastboot_confirm_msg")):
             self.toolbox_mgr.reboot_fastboot(serial)
-            self._tb_write("⚡ Reiniciando em Fastboot…", clear=True)
+            self._tb_write(t("toolbox.msg.fastboot_rebooting"), clear=True)
 
     def _tb_shutdown(self):
         serial = self._tb_serial()
         if not serial:
             return
-        if messagebox.askyesno("Desligar", "Desligar o dispositivo?"):
+        if messagebox.askyesno(t("toolbox.msg.shutdown_confirm_title"), t("toolbox.msg.shutdown_confirm_msg")):
             self.toolbox_mgr.shutdown(serial)
-            self._tb_write("⏻ Dispositivo desligando…", clear=True)
+            self._tb_write(t("toolbox.msg.shutting_down"), clear=True)
 
     # -- Logcat callbacks ----------------------------------------------------
     def _tb_capture_logcat(self):
@@ -1582,7 +1575,7 @@ class ADBToolkitApp(ctk.CTk):
         if not serial:
             return
         tag = self.entry_tb_logcat_filter.get().strip()
-        self._tb_write("📜 Capturando logcat…", clear=True)
+        self._tb_write(t("toolbox.msg.capturing_logcat"), clear=True)
 
         def _run():
             text, path = self.toolbox_mgr.capture_logcat(serial, lines=500, filter_tag=tag)
@@ -1598,7 +1591,7 @@ class ADBToolkitApp(ctk.CTk):
         def _run():
             ok = self.toolbox_mgr.clear_logcat(serial)
             icon = "✅" if ok else "❌"
-            self._tb_write(f"{icon} Buffer logcat limpo.", clear=True)
+            self._tb_write(f"{icon} {t('toolbox.msg.logcat_cleared')}", clear=True)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1618,7 +1611,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             opts_frame,
-            text="Opções de Backup",
+            text=t("backup.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(12, 8))
 
@@ -1628,15 +1621,15 @@ class ADBToolkitApp(ctk.CTk):
 
         self.backup_type_var = ctk.StringVar(value="selective")
         ctk.CTkRadioButton(
-            type_frame, text="Backup Seletivo", variable=self.backup_type_var,
+            type_frame, text=t("backup.type_selective"), variable=self.backup_type_var,
             value="selective", command=self._on_backup_type_change,
         ).pack(side="left", padx=(0, 20))
         ctk.CTkRadioButton(
-            type_frame, text="Backup Completo (ADB)", variable=self.backup_type_var,
+            type_frame, text=t("backup.type_full"), variable=self.backup_type_var,
             value="full", command=self._on_backup_type_change,
         ).pack(side="left", padx=(0, 20))
         ctk.CTkRadioButton(
-            type_frame, text="Caminhos Personalizados", variable=self.backup_type_var,
+            type_frame, text=t("backup.type_custom"), variable=self.backup_type_var,
             value="custom", command=self._on_backup_type_change,
         ).pack(side="left")
 
@@ -1646,13 +1639,13 @@ class ADBToolkitApp(ctk.CTk):
 
         self.backup_cat_vars: Dict[str, ctk.BooleanVar] = {}
         categories = [
-            ("apps", "📦 Aplicativos (APKs)"),
-            ("photos", "📷 Fotos"),
-            ("videos", "🎬 Vídeos"),
-            ("music", "🎵 Músicas"),
-            ("documents", "📄 Documentos"),
-            ("contacts", "👤 Contatos"),
-            ("sms", "💬 SMS"),
+            ("apps", t("backup.category.apps")),
+            ("photos", t("backup.category.photos")),
+            ("videos", t("backup.category.videos")),
+            ("music", t("backup.category.music")),
+            ("documents", t("backup.category.documents")),
+            ("contacts", t("backup.category.contacts")),
+            ("sms", t("backup.category.sms")),
         ]
         for i, (key, label) in enumerate(categories):
             var = ctk.BooleanVar(value=True)
@@ -1670,12 +1663,12 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             msg_header,
-            text="📱 Apps de Mensagem",
+            text=t("backup.messaging_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(side="left")
 
         ctk.CTkButton(
-            msg_header, text="🔍 Detectar Apps", width=120, height=28,
+            msg_header, text=t("backup.btn_detect"), width=120, height=28,
             command=self._detect_messaging_apps,
         ).pack(side="right", padx=4)
 
@@ -1695,13 +1688,13 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             unsync_header,
-            text="📦 Outros Apps com Dados Locais",
+            text=t("backup.unsynced_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(side="left")
 
         self.btn_detect_unsynced = ctk.CTkButton(
             unsync_header,
-            text="🔎 Detectar Apps sem Backup Online",
+            text=t("backup.btn_detect_unsynced"),
             width=220,
             height=28,
             command=self._detect_unsynced_apps,
@@ -1710,8 +1703,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             unsync_frame,
-            text="Apps instalados cujos dados podem não estar sincronizados na nuvem "
-                 "(autenticadores, jogos, notas, gravações, etc.)",
+            text=t("backup.unsynced_desc"),
             font=ctk.CTkFont(size=11),
             text_color="#8d99ae",
             wraplength=700,
@@ -1728,7 +1720,7 @@ class ADBToolkitApp(ctk.CTk):
         # Placeholder text
         self._unsynced_placeholder = ctk.CTkLabel(
             self.backup_unsynced_frame,
-            text="Clique em \"Detectar Apps sem Backup Online\" para escanear o dispositivo",
+            text=t("backup.unsynced_placeholder"),
             text_color="#8d99ae",
             font=ctk.CTkFont(size=11),
         )
@@ -1740,13 +1732,13 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             tree_label_frame,
-            text="🌳 Navegador de Arquivos do Dispositivo",
+            text=t("backup.tree_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
         ctk.CTkLabel(
             tree_label_frame,
-            text="Navegue pela árvore e marque as pastas/arquivos que deseja incluir no backup",
+            text=t("backup.tree_desc"),
             font=ctk.CTkFont(size=11),
             text_color="#8d99ae",
         ).pack(anchor="w", padx=12, pady=(0, 8))
@@ -1766,7 +1758,7 @@ class ADBToolkitApp(ctk.CTk):
 
         self.btn_start_backup = ctk.CTkButton(
             btn_frame,
-            text="▶ Iniciar Backup",
+            text=t("backup.btn_start"),
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=COLORS["success"],
             hover_color="#05c090",
@@ -1776,14 +1768,14 @@ class ADBToolkitApp(ctk.CTk):
         self.btn_start_backup.pack(side="left", padx=8)
 
         self.btn_cancel_backup = ctk.CTkButton(
-            btn_frame, text="✖ Cancelar", fg_color=COLORS["error"],
+            btn_frame, text=t("backup.btn_cancel"), fg_color=COLORS["error"],
             hover_color="#d63a5e", height=42, state="disabled",
             command=self._cancel_backup,
         )
         self.btn_cancel_backup.pack(side="left", padx=8)
 
         ctk.CTkButton(
-            btn_frame, text="📂 Abrir Pasta de Backups",
+            btn_frame, text=t("backup.btn_open_folder"),
             height=42, command=self._open_backup_folder,
         ).pack(side="right", padx=8)
 
@@ -1792,7 +1784,7 @@ class ADBToolkitApp(ctk.CTk):
         progress_frame.pack(fill="x", padx=4, pady=4)
 
         self.backup_progress_label = ctk.CTkLabel(
-            progress_frame, text="Aguardando...", anchor="w",
+            progress_frame, text=t("backup.progress_waiting"), anchor="w",
         )
         self.backup_progress_label.pack(fill="x", padx=12, pady=(8, 2))
 
@@ -1813,7 +1805,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             list_frame,
-            text="Backups Salvos",
+            text=t("backup.saved_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
@@ -1857,7 +1849,7 @@ class ADBToolkitApp(ctk.CTk):
         if not serial:
             return
 
-        self._set_status("Detectando apps de mensagem...")
+        self._set_status(t("backup.detecting_messaging"))
 
         def _run():
             try:
@@ -1866,14 +1858,14 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._on_messaging_detected(installed))
             except Exception as exc:
                 log.warning("Messaging detection error: %s", exc)
-                self.after(0, lambda: self._set_status(f"Erro: {exc}"))
+                self.after(0, lambda: self._set_status(f"{t('common.error')}: {exc}"))
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_messaging_detected(self, installed: Dict):
         """Update messaging checkboxes based on detection results."""
         count = len(installed)
-        self._set_status(f"{count} app(s) de mensagem detectado(s)")
+        self._set_status(t("backup.messaging_detected", count=count))
 
         # Check the detected apps
         for key in self.messaging_app_vars:
@@ -1893,8 +1885,8 @@ class ADBToolkitApp(ctk.CTk):
         if not serial:
             return
 
-        self.btn_detect_unsynced.configure(state="disabled", text="⏳ Escaneando...")
-        self._set_status("Escaneando apps com dados locais...")
+        self.btn_detect_unsynced.configure(state="disabled", text=t("backup.scanning_btn"))
+        self._set_status(t("backup.scanning_local_data"))
 
         def _run():
             try:
@@ -1903,9 +1895,9 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._on_unsynced_detected(detected))
             except Exception as exc:
                 log.warning("Unsynced app detection error: %s", exc)
-                self.after(0, lambda: self._set_status(f"Erro na detecção: {exc}"))
+                self.after(0, lambda: self._set_status(f"{t('common.error')}: {exc}"))
                 self.after(0, lambda: self.btn_detect_unsynced.configure(
-                    state="normal", text="🔎 Detectar Apps sem Backup Online",
+                    state="normal", text=t("backup.btn_detect_unsynced"),
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -1914,7 +1906,7 @@ class ADBToolkitApp(ctk.CTk):
         """Render detected unsynced apps as checkboxes grouped by category."""
         self._detected_apps = detected
         self.btn_detect_unsynced.configure(
-            state="normal", text="🔎 Detectar Apps sem Backup Online",
+            state="normal", text=t("backup.btn_detect_unsynced"),
         )
 
         # Clear previous content
@@ -1925,10 +1917,10 @@ class ADBToolkitApp(ctk.CTk):
         if not detected:
             ctk.CTkLabel(
                 self.backup_unsynced_frame,
-                text="✅ Nenhum app adicional com dados locais significativos encontrado.",
+                text=t("backup.no_unsynced_apps"),
                 text_color="#06d6a0",
             ).pack(pady=10)
-            self._set_status("Scan concluído — nenhum app adicional detectado")
+            self._set_status(t("backup.scan_no_apps"))
             return
 
         # Risk color mapping
@@ -1940,10 +1932,10 @@ class ADBToolkitApp(ctk.CTk):
             "unknown": "#a8a8a8",
         }
         risk_labels = {
-            "critical": "CRÍTICO",
-            "high": "ALTO",
-            "medium": "MÉDIO",
-            "low": "BAIXO",
+            "critical": t("common.risk_critical"),
+            "high": t("common.risk_high"),
+            "medium": t("common.risk_medium"),
+            "low": t("common.risk_low"),
             "unknown": "?",
         }
 
@@ -1953,23 +1945,23 @@ class ADBToolkitApp(ctk.CTk):
 
         total_label = ctk.CTkLabel(
             hdr,
-            text=f"{len(detected)} app(s) detectado(s)",
+            text=t("backup.apps_detected", count=len(detected)),
             font=ctk.CTkFont(size=12, weight="bold"),
         )
         total_label.pack(side="left", padx=4)
 
         ctk.CTkButton(
-            hdr, text="✅ Todos", width=60, height=24,
+            hdr, text=t("common.select_all"), width=60, height=24,
             fg_color="#06d6a0", hover_color="#05c090",
             command=lambda: self._toggle_all_unsynced(True),
         ).pack(side="right", padx=2)
         ctk.CTkButton(
-            hdr, text="❌ Nenhum", width=68, height=24,
+            hdr, text=t("common.select_none"), width=68, height=24,
             fg_color="#ef476f", hover_color="#d63a5e",
             command=lambda: self._toggle_all_unsynced(False),
         ).pack(side="right", padx=2)
         ctk.CTkButton(
-            hdr, text="⚠️ Só Críticos", width=90, height=24,
+            hdr, text=t("common.select_critical"), width=90, height=24,
             fg_color="#ffd166", hover_color="#e6b84d", text_color="#1a1a2e",
             command=self._select_critical_unsynced,
         ).pack(side="right", padx=2)
@@ -2036,11 +2028,11 @@ class ADBToolkitApp(ctk.CTk):
         # Count critical
         n_crit = sum(1 for a in detected if a.risk == "critical")
         n_high = sum(1 for a in detected if a.risk == "high")
-        status = f"{len(detected)} app(s) detectado(s)"
+        status = t("backup.apps_detected", count=len(detected))
         if n_crit:
-            status += f" — ⚠️ {n_crit} CRÍTICO(S)"
+            status += f" — ⚠️ {n_crit} {t('common.risk_critical')}"
         if n_high:
-            status += f", {n_high} ALTO(S)"
+            status += f", {n_high} {t('common.risk_high')}"
         self._set_status(status)
 
     def _toggle_all_unsynced(self, state: bool):
@@ -2068,7 +2060,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             sel_frame,
-            text="Selecionar Backup para Restaurar",
+            text=t("restore.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(12, 8))
 
@@ -2076,13 +2068,13 @@ class ADBToolkitApp(ctk.CTk):
         sel_row.pack(fill="x", padx=12, pady=(0, 8))
 
         self.restore_backup_menu = ctk.CTkOptionMenu(
-            sel_row, values=["Nenhum backup disponível"],
+            sel_row, values=[t("restore.no_backup")],
             width=400,
         )
         self.restore_backup_menu.pack(side="left")
 
         ctk.CTkButton(
-            sel_row, text="🔄 Atualizar Lista", width=120,
+            sel_row, text=t("restore.btn_refresh"), width=120,
             command=self._refresh_backup_list,
         ).pack(side="left", padx=8)
 
@@ -2099,17 +2091,17 @@ class ADBToolkitApp(ctk.CTk):
         opts_inner.pack(fill="x", padx=12, pady=8)
 
         ctk.CTkCheckBox(
-            opts_inner, text="📦 Restaurar Aplicativos", variable=self.restore_apps_var,
+            opts_inner, text=t("restore.restore_apps"), variable=self.restore_apps_var,
         ).grid(row=0, column=0, sticky="w", padx=8, pady=4)
         ctk.CTkCheckBox(
-            opts_inner, text="📁 Restaurar Arquivos", variable=self.restore_files_var,
+            opts_inner, text=t("restore.restore_files"), variable=self.restore_files_var,
         ).grid(row=0, column=1, sticky="w", padx=8, pady=4)
         ctk.CTkCheckBox(
-            opts_inner, text="💬 Restaurar Apps de Mensagem",
+            opts_inner, text=t("restore.restore_messaging"),
             variable=self.restore_messaging_var,
         ).grid(row=0, column=2, sticky="w", padx=8, pady=4)
         ctk.CTkCheckBox(
-            opts_inner, text="💾 Restaurar Dados de Apps (confirmação no device)",
+            opts_inner, text=t("restore.restore_data"),
             variable=self.restore_data_var,
         ).grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=4)
 
@@ -2119,13 +2111,13 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             tree_frame,
-            text="🌳 Visualizar Arquivos do Dispositivo Destino",
+            text=t("restore.tree_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
         ctk.CTkLabel(
             tree_frame,
-            text="Navegue para verificar o conteúdo atual antes de restaurar",
+            text=t("restore.tree_desc"),
             font=ctk.CTkFont(size=11),
             text_color="#8d99ae",
         ).pack(anchor="w", padx=12, pady=(0, 8))
@@ -2145,7 +2137,7 @@ class ADBToolkitApp(ctk.CTk):
 
         self.btn_start_restore = ctk.CTkButton(
             btn_frame,
-            text="▶ Iniciar Restauração",
+            text=t("restore.btn_start"),
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=COLORS["warning"],
             text_color="black",
@@ -2156,7 +2148,7 @@ class ADBToolkitApp(ctk.CTk):
         self.btn_start_restore.pack(side="left", padx=8)
 
         self.btn_cancel_restore = ctk.CTkButton(
-            btn_frame, text="✖ Cancelar", fg_color=COLORS["error"],
+            btn_frame, text=t("restore.btn_cancel"), fg_color=COLORS["error"],
             height=42, state="disabled",
             command=self._cancel_restore,
         )
@@ -2167,7 +2159,7 @@ class ADBToolkitApp(ctk.CTk):
         progress_frame.pack(fill="x", padx=4, pady=4)
 
         self.restore_progress_label = ctk.CTkLabel(
-            progress_frame, text="Aguardando...", anchor="w",
+            progress_frame, text=t("restore.progress_waiting"), anchor="w",
         )
         self.restore_progress_label.pack(fill="x", padx=12, pady=(8, 2))
 
@@ -2197,7 +2189,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             dev_frame,
-            text="Transferência entre Dispositivos",
+            text=t("transfer.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(12, 8))
 
@@ -2205,9 +2197,9 @@ class ADBToolkitApp(ctk.CTk):
         row_frame.pack(fill="x", padx=12, pady=4)
 
         # Source
-        ctk.CTkLabel(row_frame, text="📱 Origem:").grid(row=0, column=0, sticky="w", padx=4)
+        ctk.CTkLabel(row_frame, text=t("transfer.label_source")).grid(row=0, column=0, sticky="w", padx=4)
         self.transfer_source_menu = ctk.CTkOptionMenu(
-            row_frame, values=["Nenhum dispositivo"], width=300,
+            row_frame, values=[t("transfer.no_device")], width=300,
             command=self._on_transfer_source_changed,
         )
         self.transfer_source_menu.grid(row=0, column=1, padx=8, pady=4)
@@ -2219,9 +2211,9 @@ class ADBToolkitApp(ctk.CTk):
         ).grid(row=0, column=2, padx=4)
 
         # Target
-        ctk.CTkLabel(row_frame, text="📱 Destino:").grid(row=0, column=3, sticky="w", padx=4)
+        ctk.CTkLabel(row_frame, text=t("transfer.label_target")).grid(row=0, column=3, sticky="w", padx=4)
         self.transfer_target_menu = ctk.CTkOptionMenu(
-            row_frame, values=["Nenhum dispositivo"], width=300,
+            row_frame, values=[t("transfer.no_device")], width=300,
             command=self._on_transfer_target_changed,
         )
         self.transfer_target_menu.grid(row=0, column=4, padx=8, pady=4)
@@ -2232,20 +2224,20 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             cats_frame,
-            text="O que transferir:",
+            text=t("transfer.what_transfer"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
         self.transfer_cat_vars: Dict[str, ctk.BooleanVar] = {}
         t_cats = [
-            ("apps", "📦 Aplicativos"),
-            ("photos", "📷 Fotos"),
-            ("videos", "🎬 Vídeos"),
-            ("music", "🎵 Músicas"),
-            ("documents", "📄 Documentos"),
-            ("contacts", "👤 Contatos"),
-            ("sms", "💬 SMS"),
-            ("messaging_apps", "💬 Apps de Mensagem"),
+            ("apps", t("transfer.category.apps")),
+            ("photos", t("transfer.category.photos")),
+            ("videos", t("transfer.category.videos")),
+            ("music", t("transfer.category.music")),
+            ("documents", t("transfer.category.documents")),
+            ("contacts", t("transfer.category.contacts")),
+            ("sms", t("transfer.category.sms")),
+            ("messaging_apps", t("transfer.category.messaging_apps")),
         ]
 
         cats_inner = ctk.CTkFrame(cats_frame, fg_color="transparent")
@@ -2263,7 +2255,7 @@ class ADBToolkitApp(ctk.CTk):
         filter_frame.pack(fill="x", padx=12, pady=(4, 8))
 
         ctk.CTkLabel(
-            filter_frame, text="Filtros:",
+            filter_frame, text=t("transfer.filter_label"),
             font=ctk.CTkFont(size=12, weight="bold"),
         ).pack(side="left", padx=(0, 8))
 
@@ -2271,7 +2263,7 @@ class ADBToolkitApp(ctk.CTk):
             value=self.config.get("transfer.ignore_cache", True),
         )
         ctk.CTkCheckBox(
-            filter_frame, text="🗑️ Ignorar Caches",
+            filter_frame, text=t("transfer.filter_cache"),
             variable=self.var_ignore_cache,
         ).pack(side="left", padx=8)
 
@@ -2279,7 +2271,7 @@ class ADBToolkitApp(ctk.CTk):
             value=self.config.get("transfer.ignore_thumbnails", True),
         )
         ctk.CTkCheckBox(
-            filter_frame, text="🖼️ Ignorar Dumps/Thumbnails",
+            filter_frame, text=t("transfer.filter_thumbs"),
             variable=self.var_ignore_thumbnails,
         ).pack(side="left", padx=8)
 
@@ -2292,12 +2284,12 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             msg_hdr,
-            text="📱 Apps de Mensagem a Transferir",
+            text=t("transfer.msg_transfer_title"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(side="left")
 
         ctk.CTkButton(
-            msg_hdr, text="🔍 Detectar", width=90, height=28,
+            msg_hdr, text=t("transfer.btn_detect"), width=90, height=28,
             command=self._detect_messaging_apps_transfer,
         ).pack(side="right", padx=4)
 
@@ -2315,13 +2307,13 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             unsync_t_hdr,
-            text="📦 Outros Apps (dados locais)",
+            text=t("transfer.unsynced_title"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(side="left")
 
         self.btn_detect_unsynced_transfer = ctk.CTkButton(
             unsync_t_hdr,
-            text="🔎 Detectar",
+            text=t("transfer.btn_detect_unsynced"),
             width=100,
             height=28,
             command=self._detect_unsynced_apps_transfer,
@@ -2337,7 +2329,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             self.transfer_unsynced_frame,
-            text="Detecte primeiro para ver apps disponíveis",
+            text=t("transfer.unsynced_placeholder"),
             text_color="#8d99ae",
             font=ctk.CTkFont(size=11),
         ).pack(pady=6)
@@ -2348,13 +2340,13 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             src_tree_frame,
-            text="🌳 Arquivos do Dispositivo Origem",
+            text=t("transfer.src_tree_title"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 2))
 
         ctk.CTkLabel(
             src_tree_frame,
-            text="Selecione pastas/arquivos extras a transferir (opcional)",
+            text=t("transfer.src_tree_desc"),
             font=ctk.CTkFont(size=11),
             text_color="#8d99ae",
         ).pack(anchor="w", padx=12, pady=(0, 4))
@@ -2374,13 +2366,13 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             dst_tree_frame,
-            text="🌳 Arquivos do Dispositivo Destino",
+            text=t("transfer.dst_tree_title"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 2))
 
         ctk.CTkLabel(
             dst_tree_frame,
-            text="Visualize o conteúdo do dispositivo destino",
+            text=t("transfer.dst_tree_desc"),
             font=ctk.CTkFont(size=11),
             text_color="#8d99ae",
         ).pack(anchor="w", padx=12, pady=(0, 4))
@@ -2400,7 +2392,7 @@ class ADBToolkitApp(ctk.CTk):
 
         self.btn_start_transfer = ctk.CTkButton(
             btn_frame,
-            text="🔄 Iniciar Transferência",
+            text=t("transfer.btn_start"),
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
@@ -2411,14 +2403,14 @@ class ADBToolkitApp(ctk.CTk):
 
         self.btn_clone_device = ctk.CTkButton(
             btn_frame,
-            text="📋 Clonar Dispositivo (Tudo)",
+            text=t("transfer.btn_clone"),
             height=42,
             command=self._clone_device,
         )
         self.btn_clone_device.pack(side="left", padx=8)
 
         self.btn_cancel_transfer = ctk.CTkButton(
-            btn_frame, text="✖ Cancelar",
+            btn_frame, text=t("transfer.btn_cancel"),
             fg_color=COLORS["error"], height=42, state="disabled",
             command=self._cancel_transfer,
         )
@@ -2429,7 +2421,7 @@ class ADBToolkitApp(ctk.CTk):
         progress_frame.pack(fill="x", padx=4, pady=4)
 
         self.transfer_progress_label = ctk.CTkLabel(
-            progress_frame, text="Aguardando...", anchor="w",
+            progress_frame, text=t("transfer.progress_waiting"), anchor="w",
         )
         self.transfer_progress_label.pack(fill="x", padx=12, pady=(8, 2))
 
@@ -2455,13 +2447,13 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkLabel(
             info_frame,
-            text="Gerenciamento de Drivers USB",
+            text=t("drivers.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(12, 8))
 
         self.driver_status_text = ctk.CTkTextbox(info_frame, height=150)
         self.driver_status_text.pack(fill="x", padx=12, pady=(0, 8))
-        self.driver_status_text.insert("end", "Clique em 'Verificar Drivers' para analisar.")
+        self.driver_status_text.insert("end", t("drivers.placeholder"))
         self.driver_status_text.configure(state="disabled")
 
         # --- Row 1: Check + Google + Universal + Auto ---
@@ -2469,25 +2461,25 @@ class ADBToolkitApp(ctk.CTk):
         btn_frame.pack(fill="x", padx=8, pady=4)
 
         ctk.CTkButton(
-            btn_frame, text="🔍 Verificar Drivers", height=40,
+            btn_frame, text=t("drivers.btn_check"), height=40,
             command=self._check_drivers,
         ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            btn_frame, text="📥 Instalar Google USB Driver",
+            btn_frame, text=t("drivers.btn_google"),
             fg_color=COLORS["success"], hover_color="#05c090", height=40,
             command=self._install_google_driver,
         ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            btn_frame, text="📥 Instalar Driver Universal",
+            btn_frame, text=t("drivers.btn_universal"),
             fg_color=COLORS["warning"], text_color="black",
             hover_color="#e6bc5a", height=40,
             command=self._install_universal_driver,
         ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            btn_frame, text="🔄 Auto-detectar e Instalar",
+            btn_frame, text=t("drivers.btn_auto"),
             fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
             height=40,
             command=self._auto_install_drivers,
@@ -2495,7 +2487,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # --- Row 2: Chipset-specific drivers ---
         ctk.CTkLabel(
-            tab, text="Drivers por Chipset:",
+            tab, text=t("drivers.chipset_title"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", padx=16, pady=(10, 2))
 
@@ -2503,33 +2495,56 @@ class ADBToolkitApp(ctk.CTk):
         chipset_frame.pack(fill="x", padx=8, pady=4)
 
         ctk.CTkButton(
-            chipset_frame, text="📱 Samsung (Exynos/ODIN)",
+            chipset_frame, text=t("drivers.btn_samsung"),
             fg_color="#1428A0", hover_color="#0D1B6E", height=40,
             command=self._install_samsung_driver,
         ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            chipset_frame, text="🔧 Qualcomm (Snapdragon)",
+            chipset_frame, text=t("drivers.btn_qualcomm"),
             fg_color="#3253DC", hover_color="#263EA0", height=40,
             command=self._install_qualcomm_driver,
         ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            chipset_frame, text="⚙️ MediaTek",
+            chipset_frame, text=t("drivers.btn_mediatek"),
             fg_color="#E3350D", hover_color="#B02A0A", height=40,
             command=self._install_mediatek_driver,
         ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            chipset_frame, text="💻 Intel",
+            chipset_frame, text=t("drivers.btn_intel"),
             fg_color="#0068B5", hover_color="#004A80", height=40,
             command=self._install_intel_driver,
         ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            chipset_frame, text="📦 Instalar Todos os Chipsets",
+            chipset_frame, text=t("drivers.btn_all_chipsets"),
             fg_color="#6B21A8", hover_color="#4C1D95", height=40,
             command=self._install_all_chipset_drivers,
+        ).pack(side="left", padx=8)
+
+        # --- Row 3: iOS / Apple drivers ---
+        ctk.CTkLabel(
+            tab, text=t("drivers.ios_title"),
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=16, pady=(10, 2))
+
+        ios_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        ios_frame.pack(fill="x", padx=8, pady=4)
+
+        ctk.CTkButton(
+            ios_frame, text=t("drivers.btn_apple"),
+            fg_color="#A2AAAD", hover_color="#8E9497", text_color="#000000",
+            height=40,
+            command=self._install_apple_drivers,
+        ).pack(side="left", padx=8)
+
+        ctk.CTkButton(
+            ios_frame, text=t("drivers.btn_check_apple"),
+            fg_color="#555555", hover_color="#444444",
+            height=40,
+            command=self._check_apple_drivers,
         ).pack(side="left", padx=8)
 
         # Driver install progress
@@ -2548,37 +2563,68 @@ class ADBToolkitApp(ctk.CTk):
     def _build_settings_tab(self):
         tab = self._tab_settings
 
-        frame = ctk.CTkFrame(tab)
-        frame.pack(fill="both", expand=True, padx=8, pady=8)
+        settings_scroll = ctk.CTkScrollableFrame(tab)
+        settings_scroll.pack(fill="both", expand=True, padx=4, pady=4)
+
+        frame = ctk.CTkFrame(settings_scroll)
+        frame.pack(fill="x", padx=4, pady=4)
 
         ctk.CTkLabel(
             frame,
-            text="Configurações",
+            text=t("settings.title"),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(12, 8))
+
+        # ────── Language section ──────
+        lang_header = ctk.CTkFrame(frame, fg_color="transparent")
+        lang_header.pack(fill="x", padx=12, pady=(4, 4))
+        ctk.CTkLabel(
+            lang_header,
+            text=f"🌐 {t('common.language')}",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w")
+
+        lang_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        lang_frame.pack(fill="x", padx=12, pady=4)
+        ctk.CTkLabel(lang_frame, text=t("settings.language_label")).pack(side="left")
+
+        langs = available_languages()
+        lang_names = [f"{v} ({k})" for k, v in langs.items()]
+        lang_codes = list(langs.keys())
+        current = get_language()
+        current_idx = lang_codes.index(current) if current in lang_codes else 0
+
+        self.settings_lang_var = ctk.StringVar(value=lang_names[current_idx])
+        self._lang_code_map = dict(zip(lang_names, lang_codes))
+
+        ctk.CTkOptionMenu(
+            lang_frame, values=lang_names,
+            variable=self.settings_lang_var, width=220,
+            command=self._on_language_changed,
+        ).pack(side="left", padx=8)
 
         # ADB path
         adb_frame = ctk.CTkFrame(frame, fg_color="transparent")
         adb_frame.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(adb_frame, text="Caminho ADB:").pack(side="left")
+        ctk.CTkLabel(adb_frame, text=t("settings.label_adb_path")).pack(side="left")
         self.entry_adb_path = ctk.CTkEntry(adb_frame, width=400)
         self.entry_adb_path.pack(side="left", padx=8)
         if self.adb.adb_path:
             self.entry_adb_path.insert(0, self.adb.adb_path)
         ctk.CTkButton(
-            adb_frame, text="Procurar", width=80,
+            adb_frame, text=t("settings.btn_browse_adb"), width=80,
             command=self._browse_adb,
         ).pack(side="left")
 
         # Backup directory
         bkp_frame = ctk.CTkFrame(frame, fg_color="transparent")
         bkp_frame.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(bkp_frame, text="Pasta de Backups:").pack(side="left")
+        ctk.CTkLabel(bkp_frame, text=t("settings.label_backup_dir")).pack(side="left")
         self.entry_backup_dir = ctk.CTkEntry(bkp_frame, width=400)
         self.entry_backup_dir.pack(side="left", padx=8)
         self.entry_backup_dir.insert(0, str(self.backup_mgr.backup_dir))
         ctk.CTkButton(
-            bkp_frame, text="Procurar", width=80,
+            bkp_frame, text=t("settings.btn_browse_adb"), width=80,
             command=self._browse_backup_dir,
         ).pack(side="left")
 
@@ -2587,7 +2633,7 @@ class ADBToolkitApp(ctk.CTk):
             value=self.config.get("drivers.auto_install", True)
         )
         ctk.CTkCheckBox(
-            frame, text="Instalar drivers automaticamente ao detectar dispositivo",
+            frame, text=t("settings.auto_install_drivers"),
             variable=self.auto_driver_var,
         ).pack(anchor="w", padx=12, pady=8)
 
@@ -2596,7 +2642,7 @@ class ADBToolkitApp(ctk.CTk):
         accel_header.pack(fill="x", padx=12, pady=(16, 4))
         ctk.CTkLabel(
             accel_header,
-            text="⚡ Aceleração por Hardware",
+            text=f"⚡ {t('settings.section_acceleration')}",
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w")
 
@@ -2605,7 +2651,7 @@ class ADBToolkitApp(ctk.CTk):
             value=self.config.get("acceleration.gpu_enabled", True),
         )
         ctk.CTkCheckBox(
-            frame, text="Habilitar aceleração GPU para verificação de integridade",
+            frame, text=t("settings.gpu_acceleration"),
             variable=self.settings_gpu_var,
         ).pack(anchor="w", padx=12, pady=4)
 
@@ -2614,7 +2660,7 @@ class ADBToolkitApp(ctk.CTk):
             value=self.config.get("acceleration.multi_gpu", True),
         )
         ctk.CTkCheckBox(
-            frame, text="Distribuir carga entre múltiplas GPUs (se disponíveis)",
+            frame, text=t("settings.multi_gpu"),
             variable=self.settings_multigpu_var,
         ).pack(anchor="w", padx=28, pady=2)
 
@@ -2623,14 +2669,14 @@ class ADBToolkitApp(ctk.CTk):
             value=self.config.get("acceleration.verify_checksums", True),
         )
         ctk.CTkCheckBox(
-            frame, text="Verificar checksums após transferência/clone",
+            frame, text=t("settings.verify_transfers"),
             variable=self.settings_verify_var,
         ).pack(anchor="w", padx=12, pady=4)
 
         # Checksum algo
         algo_frame = ctk.CTkFrame(frame, fg_color="transparent")
         algo_frame.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(algo_frame, text="Algoritmo de checksum:").pack(side="left")
+        ctk.CTkLabel(algo_frame, text=t("settings.checksum_algo")).pack(side="left")
         self.settings_algo_var = ctk.StringVar(
             value=self.config.get("acceleration.checksum_algo", "md5"),
         )
@@ -2647,7 +2693,7 @@ class ADBToolkitApp(ctk.CTk):
         )
         ctk.CTkCheckBox(
             auto_thr_frame,
-            text="Threads automáticas (baseado no hardware)",
+            text=t("settings.auto_threads"),
             variable=self.settings_auto_threads_var,
             command=self._toggle_auto_threads,
         ).pack(side="left")
@@ -2665,7 +2711,7 @@ class ADBToolkitApp(ctk.CTk):
 
         workers_frame = ctk.CTkFrame(frame, fg_color="transparent")
         workers_frame.pack(fill="x", padx=12, pady=4)
-        ctk.CTkLabel(workers_frame, text="Threads pull/push:").pack(side="left")
+        ctk.CTkLabel(workers_frame, text=t("settings.max_pull_workers")).pack(side="left")
         self.settings_pull_w = ctk.CTkEntry(workers_frame, width=50)
         self.settings_pull_w.pack(side="left", padx=4)
         self.settings_pull_w.insert(
@@ -2685,7 +2731,7 @@ class ADBToolkitApp(ctk.CTk):
         virt_header.pack(fill="x", padx=12, pady=(16, 4))
         ctk.CTkLabel(
             virt_header,
-            text="🖥️ Virtualização",
+            text=f"🖥️ {t('settings.virtualization')}",
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w")
 
@@ -2693,13 +2739,13 @@ class ADBToolkitApp(ctk.CTk):
             value=self.config.get("virtualization.enabled", True),
         )
         ctk.CTkCheckBox(
-            frame, text="Habilitar virtualização (Hyper-V / VT-x / WSL2)",
+            frame, text=t("settings.virtualization"),
             variable=self.settings_virt_var,
         ).pack(anchor="w", padx=12, pady=4)
 
         # GPU info label (populated async)
         self.lbl_settings_gpu_info = ctk.CTkLabel(
-            frame, text="Detectando GPUs…",
+            frame, text=t("common.loading"),
             font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
             justify="left", anchor="w",
         )
@@ -2709,7 +2755,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # Download ADB
         ctk.CTkButton(
-            frame, text="📥 Baixar/Atualizar Platform Tools",
+            frame, text=t("settings.download_adb"),
             command=self._download_platform_tools,
         ).pack(anchor="w", padx=12, pady=8)
 
@@ -2718,12 +2764,12 @@ class ADBToolkitApp(ctk.CTk):
         path_header.pack(fill="x", padx=12, pady=(16, 4))
         ctk.CTkLabel(
             path_header,
-            text="🔗 ADB no PATH do Sistema",
+            text=t("settings.adb_path_title"),
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w")
 
         self.lbl_path_status = ctk.CTkLabel(
-            frame, text="Verificando…",
+            frame, text=t("common.loading"),
             font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
             anchor="w",
         )
@@ -2733,13 +2779,13 @@ class ADBToolkitApp(ctk.CTk):
         path_btn_frame.pack(fill="x", padx=12, pady=4)
 
         self.btn_add_path = ctk.CTkButton(
-            path_btn_frame, text="➕ Adicionar ADB ao PATH",
+            path_btn_frame, text=t("settings.btn_add_path"),
             width=240, command=self._add_adb_to_path,
         )
         self.btn_add_path.pack(side="left", padx=(0, 8))
 
         self.btn_remove_path = ctk.CTkButton(
-            path_btn_frame, text="➖ Remover ADB do PATH",
+            path_btn_frame, text=t("settings.btn_remove_path"),
             width=240, fg_color=COLORS["error"], hover_color="#d03050",
             command=self._remove_adb_from_path,
         )
@@ -2750,7 +2796,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # Save
         ctk.CTkButton(
-            frame, text="💾 Salvar Configurações",
+            frame, text=t("settings.btn_save"),
             fg_color=COLORS["success"], hover_color="#05c090",
             command=self._save_settings,
         ).pack(anchor="w", padx=12, pady=12)
@@ -2813,7 +2859,7 @@ class ADBToolkitApp(ctk.CTk):
 
             # Animated waiting indicator
             self._confirm_dots_lbl = ctk.CTkLabel(
-                dlg, text="⏳ Aguardando confirmação no dispositivo...",
+                dlg, text=t("devices.waiting_confirmation"),
                 font=ctk.CTkFont(size=12),
                 text_color=COLORS["text_dim"],
             )
@@ -2889,7 +2935,7 @@ class ADBToolkitApp(ctk.CTk):
         self._safe_after(100, self._refresh_devices)
         if event == "connected":
             self._safe_after(200, lambda: self._set_status(
-                f"Dispositivo conectado: {device.friendly_name()}"
+                t("devices.device_connected", name=device.friendly_name())
             ))
             # Auto-install drivers if configured (skip if already running)
             if (
@@ -2927,7 +2973,7 @@ class ADBToolkitApp(ctk.CTk):
         # Update top bar
         if total_count == 0:
             self.lbl_connection.configure(
-                text="Nenhum dispositivo conectado",
+                text=t("devices.connection_none"),
                 text_color=COLORS["text_dim"],
             )
         elif total_count == 1:
@@ -2945,7 +2991,7 @@ class ADBToolkitApp(ctk.CTk):
             if ios_count:
                 parts.append(f"🍎{ios_count}")
             self.lbl_connection.configure(
-                text=f"✅ {total_count} dispositivos ({' + '.join(parts)})",
+                text=t("devices.connection_multiple", count=total_count, parts=' + '.join(parts)),
                 text_color=COLORS["success"],
             )
 
@@ -2956,10 +3002,7 @@ class ADBToolkitApp(ctk.CTk):
         if not self.devices and not ios_count:
             self.lbl_no_devices = ctk.CTkLabel(
                 self.device_list_frame,
-                text="Nenhum dispositivo detectado.\n\n"
-                     "1. Conecte seu dispositivo Android ou iPhone via USB\n"
-                     "2. Android: Ative 'Depuração USB' nas Opções do Desenvolvedor\n"
-                     "3. iPhone: Confie neste computador quando solicitado",
+                text=t("devices.no_device_instructions_ios"),
                 font=ctk.CTkFont(size=13),
                 text_color=COLORS["text_dim"],
                 justify="center",
@@ -3061,9 +3104,9 @@ class ADBToolkitApp(ctk.CTk):
 
         details_parts: List[str] = []
         if dev.manufacturer:
-            details_parts.append(f"Marca: {dev.manufacturer}")
+            details_parts.append(f"{t('devices.brand')}: {dev.manufacturer}")
         if dev.model:
-            details_parts.append(f"Modelo: {dev.model}")
+            details_parts.append(f"{t('devices.model')}: {dev.model}")
         if dev.android_version:
             details_parts.append(f"Android {dev.android_version}")
 
@@ -3084,24 +3127,24 @@ class ADBToolkitApp(ctk.CTk):
         btn_row.pack(fill="x", padx=8, pady=(0, 8))
 
         ctk.CTkButton(
-            btn_row, text="ℹ️ Detalhes", width=100,
+            btn_row, text=t("devices.btn_details"), width=100,
             command=lambda s=serial: self._show_device_details(s),
         ).pack(side="left", padx=4)
 
         ctk.CTkButton(
-            btn_row, text="💾 Backup", width=100,
+            btn_row, text=t("devices.btn_backup"), width=100,
             fg_color=COLORS["success"], hover_color="#05c090",
             command=lambda s=serial: self._quick_backup(s),
         ).pack(side="left", padx=4)
 
         ctk.CTkButton(
-            btn_row, text="🔄 Reiniciar", width=100,
+            btn_row, text=t("devices.btn_reboot"), width=100,
             fg_color=COLORS["warning"], text_color="black",
             command=lambda s=serial: self._reboot_device(s),
         ).pack(side="left", padx=4)
 
         ctk.CTkButton(
-            btn_row, text="🧹 Limpar Cache", width=120,
+            btn_row, text=t("devices.btn_clear_cache"), width=120,
             fg_color="#7b2cbf", hover_color="#9d4edd",
             command=lambda s=serial: self._open_cache_manager(s),
         ).pack(side="left", padx=4)
@@ -3158,14 +3201,14 @@ class ADBToolkitApp(ctk.CTk):
         # ---- Row 3: Info note ----
         ctk.CTkLabel(
             card,
-            text="📋 Disponível para transferência cross-platform (Fotos, Contatos, SMS, Músicas)",
+            text=t("devices.ios_cross_platform"),
             font=ctk.CTkFont(size=10),
             text_color=COLORS["text_dim"],
         ).pack(padx=8, pady=(0, 8), anchor="w")
 
     def _show_device_details(self, serial: str):
         """Show detailed device info."""
-        self._set_status(f"Obtendo detalhes de {serial}...")
+        self._set_status(t("devices.loading_details", serial=serial))
 
         def _fetch():
             dev = self.adb.get_device_details(serial)
@@ -3177,27 +3220,27 @@ class ADBToolkitApp(ctk.CTk):
         self.device_details_text.configure(state="normal")
         self.device_details_text.delete("1.0", "end")
         text = (
-            f"Fabricante:     {dev.manufacturer}\n"
-            f"Modelo:         {dev.model}\n"
-            f"Produto:        {dev.product}\n"
+            f"{t('devices.detail_manufacturer')}:     {dev.manufacturer}\n"
+            f"{t('devices.detail_model')}:         {dev.model}\n"
+            f"{t('devices.detail_product')}:        {dev.product}\n"
             f"Android:        {dev.android_version} (SDK {dev.sdk_version})\n"
             f"Serial:         {dev.serial}\n"
-            f"Bateria:        {dev.battery_level}%\n"
-            f"Armazenamento:  {format_bytes(dev.storage_free)} livre "
-            f"/ {format_bytes(dev.storage_total)} total"
+            f"{t('devices.detail_battery')}:        {dev.battery_level}%\n"
+            f"{t('devices.detail_storage')}:  {format_bytes(dev.storage_free)} {t('common.free')} "
+            f"/ {format_bytes(dev.storage_total)} {t('common.total')}"
         )
         self.device_details_text.insert("end", text)
         self.device_details_text.configure(state="disabled")
-        self._set_status("Detalhes carregados")
+        self._set_status(t("devices.details_loaded"))
 
     def _reboot_device(self, serial: str):
-        if messagebox.askyesno("Reiniciar", f"Reiniciar dispositivo {serial}?"):
+        if messagebox.askyesno(t("devices.reboot_title"), t("devices.reboot_confirm", serial=serial)):
             self.adb.reboot("", serial)
-            self._set_status(f"Reiniciando {serial}...")
+            self._set_status(t("devices.rebooting", serial=serial))
 
     def _quick_backup(self, serial: str):
         self.selected_device = serial
-        self.tabview.set("💾 Backup")
+        self.tabview.set(t("tabs.backup"))
 
     # ==================================================================
     # Cache management
@@ -3205,7 +3248,7 @@ class ADBToolkitApp(ctk.CTk):
     def _open_cache_manager(self, serial: str):
         """Open a dialog to manage app cache for the device."""
         dialog = ctk.CTkToplevel(self)
-        dialog.title("🧹 Limpar Cache")
+        dialog.title(t("cache.title"))
         dialog.geometry("650x520")
         dialog.transient(self)
         dialog.grab_set()
@@ -3219,12 +3262,12 @@ class ADBToolkitApp(ctk.CTk):
         hdr.pack(fill="x", padx=16, pady=(16, 8))
 
         ctk.CTkLabel(
-            hdr, text=f"🧹 Gerenciador de Cache — {dev_name}",
+            hdr, text=t("cache.header", name=dev_name),
             font=ctk.CTkFont(size=16, weight="bold"),
         ).pack(anchor="w")
 
         self._cache_status_label = ctk.CTkLabel(
-            hdr, text="Escaneando cache dos aplicativos...",
+            hdr, text=t("cache.scanning"),
             text_color=COLORS["text_dim"],
             font=ctk.CTkFont(size=12),
         )
@@ -3235,7 +3278,7 @@ class ADBToolkitApp(ctk.CTk):
         btn_frame.pack(fill="x", padx=16, pady=(4, 4))
 
         btn_clear_all = ctk.CTkButton(
-            btn_frame, text="🗑️ Limpar TODOS os Caches",
+            btn_frame, text=t("cache.btn_clear_all"),
             fg_color=COLORS["error"], hover_color="#d63a5e",
             height=36, width=220,
             command=lambda: self._clear_all_cache(serial, dialog),
@@ -3243,7 +3286,7 @@ class ADBToolkitApp(ctk.CTk):
         btn_clear_all.pack(side="left", padx=4)
 
         btn_clear_sel = ctk.CTkButton(
-            btn_frame, text="🧹 Limpar Selecionados",
+            btn_frame, text=t("cache.btn_clear_selected"),
             fg_color="#7b2cbf", hover_color="#9d4edd",
             height=36, width=200,
             command=lambda: self._clear_selected_cache(serial, dialog),
@@ -3261,13 +3304,13 @@ class ADBToolkitApp(ctk.CTk):
         sel_frame.pack(fill="x", padx=16, pady=(0, 4))
 
         ctk.CTkButton(
-            sel_frame, text="✅ Todos", width=70, height=28,
+            sel_frame, text=t("common.select_all"), width=70, height=28,
             fg_color="#06d6a0", hover_color="#05c090",
             command=lambda: self._cache_select_toggle(True),
         ).pack(side="left", padx=4)
 
         ctk.CTkButton(
-            sel_frame, text="❌ Nenhum", width=80, height=28,
+            sel_frame, text=t("common.select_none"), width=80, height=28,
             fg_color="#ef476f", hover_color="#d63a5e",
             command=lambda: self._cache_select_toggle(False),
         ).pack(side="left", padx=4)
@@ -3284,14 +3327,14 @@ class ADBToolkitApp(ctk.CTk):
 
     def _scan_cache(self, serial: str, scroll_frame, dialog):
         """Scan app cache sizes in background."""
-        self._cache_status_label.configure(text="⏳ Escaneando cache dos aplicativos...")
+        self._cache_status_label.configure(text=t("cache.scanning"))
 
         for w in scroll_frame.winfo_children():
             w.destroy()
         self._cache_check_vars.clear()
 
         ctk.CTkLabel(
-            scroll_frame, text="⏳ Carregando...",
+            scroll_frame, text=t("cache.loading"),
             text_color=COLORS["text_dim"],
         ).pack(pady=20)
 
@@ -3335,7 +3378,7 @@ class ADBToolkitApp(ctk.CTk):
             except Exception as exc:
                 log.warning("Cache scan error: %s", exc)
                 self.after(0, lambda: self._cache_status_label.configure(
-                    text=f"Erro ao escanear: {exc}"
+                    text=t("cache.scan_error", error=exc)
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -3350,13 +3393,12 @@ class ADBToolkitApp(ctk.CTk):
         apps_with_cache = sum(1 for d in cache_data if d["cache_bytes"] > 0)
 
         self._cache_status_label.configure(
-            text=f"{len(cache_data)} apps · {apps_with_cache} com cache · "
-                 f"Total estimado: {format_bytes(total_cache)}"
+            text=t("cache.status", total=len(cache_data), with_cache=apps_with_cache, size=format_bytes(total_cache))
         )
 
         if not cache_data:
             ctk.CTkLabel(
-                scroll_frame, text="Nenhum aplicativo encontrado.",
+                scroll_frame, text=t("cache.no_apps"),
                 text_color=COLORS["text_dim"],
             ).pack(pady=20)
             return
@@ -3409,22 +3451,21 @@ class ADBToolkitApp(ctk.CTk):
     def _clear_all_cache(self, serial: str, dialog):
         """Clear all app caches using pm trim-caches."""
         if not messagebox.askyesno(
-            "Limpar Cache",
-            "Limpar o cache de TODOS os aplicativos?\n\n"
-            "Isso não apaga dados pessoais, apenas cache temporário.",
+            t("cache.title"),
+            t("cache.confirm_all"),
             parent=dialog,
         ):
             return
 
-        self._cache_status_label.configure(text="⏳ Limpando todos os caches...")
+        self._cache_status_label.configure(text=t("cache.clearing_all"))
 
         def _run():
             try:
                 success = self.adb.clear_all_cache(serial)
                 if success:
-                    msg = "✅ Cache de todos os aplicativos limpo!"
+                    msg = t("cache.all_cleared")
                 else:
-                    msg = "⚠️ Comando executado, mas pode exigir root."
+                    msg = t("cache.may_need_root")
                 self.after(0, lambda: self._cache_status_label.configure(text=msg))
                 # Refresh the list
                 self.after(500, lambda: self._scan_cache(
@@ -3432,7 +3473,7 @@ class ADBToolkitApp(ctk.CTk):
                 ))
             except Exception as exc:
                 self.after(0, lambda: self._cache_status_label.configure(
-                    text=f"Erro: {exc}"
+                    text=f"{t('common.error')}: {exc}"
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -3441,19 +3482,18 @@ class ADBToolkitApp(ctk.CTk):
         """Clear cache for selected apps."""
         selected = [pkg for pkg, var in self._cache_check_vars.items() if var.get()]
         if not selected:
-            messagebox.showinfo("Limpar Cache", "Nenhum app selecionado.", parent=dialog)
+            messagebox.showinfo(t("cache.title"), t("cache.no_selection"), parent=dialog)
             return
 
         if not messagebox.askyesno(
-            "Limpar Cache",
-            f"Limpar cache de {len(selected)} aplicativo(s)?\n\n"
-            "Isso não apaga dados pessoais, apenas cache temporário.",
+            t("cache.title"),
+            t("cache.confirm_selected", count=len(selected)),
             parent=dialog,
         ):
             return
 
         self._cache_status_label.configure(
-            text=f"⏳ Limpando cache de {len(selected)} app(s)..."
+            text=t("cache.clearing_selected", count=len(selected))
         )
 
         def _run():
@@ -3463,14 +3503,14 @@ class ADBToolkitApp(ctk.CTk):
                     self.adb.clear_app_cache(pkg, serial)
                     cleared += 1
                     if i % 5 == 0:
-                        self.after(0, lambda c=cleared, t=len(selected):
+                        self.after(0, lambda c=cleared, total=len(selected):
                             self._cache_status_label.configure(
-                                text=f"⏳ Limpando... {c}/{t}"
+                                text=t("cache.clearing_progress", done=c, total=total)
                             )
                         )
 
                 self.after(0, lambda: self._cache_status_label.configure(
-                    text=f"✅ Cache limpo em {cleared} aplicativo(s)!"
+                    text=t("cache.selected_cleared", count=cleared)
                 ))
                 # Refresh the list
                 self.after(500, lambda: self._scan_cache(
@@ -3478,7 +3518,7 @@ class ADBToolkitApp(ctk.CTk):
                 ))
             except Exception as exc:
                 self.after(0, lambda: self._cache_status_label.configure(
-                    text=f"Erro: {exc}"
+                    text=f"{t('common.error')}: {exc}"
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -3599,7 +3639,7 @@ class ADBToolkitApp(ctk.CTk):
                     if not custom_paths and not selected_msg_keys and not selected_unsynced_pkgs:
                         self.after(0, lambda: messagebox.showwarning(
                             "Backup",
-                            "Selecione caminhos na árvore, apps de mensagem ou outros apps.",
+                            t("backup.select_items_msg"),
                         ))
                         return
                 else:
@@ -3633,9 +3673,9 @@ class ADBToolkitApp(ctk.CTk):
                     if custom_paths:
                         self.backup_mgr.backup_custom_paths(serial, custom_paths)
 
-                self.after(0, lambda: messagebox.showinfo("Backup", "Backup concluído!"))
+                self.after(0, lambda: messagebox.showinfo("Backup", t("backup.completed")))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
             finally:
                 self.after(0, self._backup_finished)
 
@@ -3653,15 +3693,15 @@ class ADBToolkitApp(ctk.CTk):
                 self.backup_progress_bar.set(p.percent / 100)
                 detail_parts = []
                 if p.items_total:
-                    detail_parts.append(f"{p.items_done}/{p.items_total} itens")
+                    detail_parts.append(f"{p.items_done}/{p.items_total} {t('common.items')}")
                 if p.bytes_total:
                     detail_parts.append(f"{format_bytes(p.bytes_done)}/{format_bytes(p.bytes_total)}")
                 if p.elapsed_seconds > 0:
-                    detail_parts.append(f"Tempo: {format_duration(p.elapsed_seconds)}")
+                    detail_parts.append(f"{t('common.time')}: {format_duration(p.elapsed_seconds)}")
                 if p.eta_seconds and p.eta_seconds > 0:
                     detail_parts.append(f"ETA: {format_duration(p.eta_seconds)}")
                 if p.errors:
-                    detail_parts.append(f"Erros: {len(p.errors)}")
+                    detail_parts.append(f"{t('common.errors')}: {len(p.errors)}")
                 self.backup_progress_detail.configure(text="  |  ".join(detail_parts))
             except Exception:
                 pass
@@ -3670,7 +3710,7 @@ class ADBToolkitApp(ctk.CTk):
     def _cancel_backup(self):
         self.backup_mgr.cancel()
         self.transfer_mgr.cancel()
-        self._set_status("Backup cancelado")
+        self._set_status(t("backup.cancelled"))
 
     def _backup_finished(self):
         self._unlock_ui()
@@ -3690,7 +3730,7 @@ class ADBToolkitApp(ctk.CTk):
         if not backups:
             ctk.CTkLabel(
                 self.backup_list_frame,
-                text="Nenhum backup encontrado",
+                text=t("backup.no_backup"),
                 text_color=COLORS["text_dim"],
             ).pack(pady=20)
         else:
@@ -3706,7 +3746,7 @@ class ADBToolkitApp(ctk.CTk):
             self.restore_backup_menu.configure(values=values)
             self.restore_backup_menu.set(values[0])
         else:
-            self.restore_backup_menu.configure(values=["Nenhum backup disponível"])
+            self.restore_backup_menu.configure(values=[t("restore.no_backup")])
 
     def _create_backup_card(self, m):
         card = ctk.CTkFrame(self.backup_list_frame, corner_radius=8)
@@ -3729,7 +3769,7 @@ class ADBToolkitApp(ctk.CTk):
 
         info = f"{format_bytes(m.size_bytes)} | {m.timestamp[:10]}"
         if m.file_count:
-            info += f" | {m.file_count} arquivos"
+            info += f" | {m.file_count} {t('common.files')}"
         if m.app_count:
             info += f" | {m.app_count} apps"
 
@@ -3746,7 +3786,7 @@ class ADBToolkitApp(ctk.CTk):
         ).pack(side="right", padx=2)
 
     def _delete_backup(self, backup_id: str):
-        if messagebox.askyesno("Excluir Backup", f"Excluir '{backup_id}'?"):
+        if messagebox.askyesno(t("backup.delete_title"), t("backup.delete_confirm", id=backup_id)):
             self.backup_mgr.delete_backup(backup_id)
             self._refresh_backup_list()
 
@@ -3759,16 +3799,15 @@ class ADBToolkitApp(ctk.CTk):
             return
 
         selected = self.restore_backup_menu.get()
-        if "Nenhum" in selected:
-            messagebox.showwarning("Restauração", "Nenhum backup selecionado")
+        if "Nenhum" in selected or t("restore.no_backup") in selected:
+            messagebox.showwarning(t("restore.title"), t("restore.no_selection"))
             return
 
         backup_id = selected.split(" (")[0]
 
         if not messagebox.askyesno(
-            "Confirmar Restauração",
-            f"Restaurar backup '{backup_id}' para {serial}?\n\n"
-            "Isso pode sobrescrever dados existentes no dispositivo.",
+            t("restore.confirm_title"),
+            t("restore.confirm_msg", id=backup_id, serial=serial),
         ):
             return
 
@@ -3780,10 +3819,10 @@ class ADBToolkitApp(ctk.CTk):
                 self.restore_mgr.set_progress_callback(self._on_restore_progress)
                 self.restore_mgr.restore_smart(serial, backup_id)
                 self.after(0, lambda: messagebox.showinfo(
-                    "Restauração", "Restauração concluída!"
+                    t("restore.title"), t("restore.completed")
                 ))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
             finally:
                 self.after(0, self._restore_finished)
 
@@ -3801,15 +3840,15 @@ class ADBToolkitApp(ctk.CTk):
                 self.restore_progress_bar.set(p.percent / 100)
                 detail_parts = []
                 if p.items_total:
-                    detail_parts.append(f"{p.items_done}/{p.items_total} itens")
+                    detail_parts.append(f"{p.items_done}/{p.items_total} {t('common.items')}")
                 if p.bytes_total:
                     detail_parts.append(f"{format_bytes(p.bytes_done)}/{format_bytes(p.bytes_total)}")
                 if p.elapsed_seconds > 0:
-                    detail_parts.append(f"Tempo: {format_duration(p.elapsed_seconds)}")
+                    detail_parts.append(f"{t('common.time')}: {format_duration(p.elapsed_seconds)}")
                 if p.eta_seconds and p.eta_seconds > 0:
                     detail_parts.append(f"ETA: {format_duration(p.eta_seconds)}")
                 if p.errors:
-                    detail_parts.append(f"Erros: {len(p.errors)}")
+                    detail_parts.append(f"{t('common.errors')}: {len(p.errors)}")
                 self.restore_progress_detail.configure(text="  |  ".join(detail_parts))
             except Exception:
                 pass
@@ -3818,7 +3857,7 @@ class ADBToolkitApp(ctk.CTk):
     def _cancel_restore(self):
         self.restore_mgr.cancel()
         self.transfer_mgr.cancel()
-        self._set_status("Restauração cancelada")
+        self._set_status(t("restore.cancelled"))
 
     def _restore_finished(self):
         self._unlock_ui()
@@ -3848,9 +3887,9 @@ class ADBToolkitApp(ctk.CTk):
             if udev.platform == DevicePlatform.IOS:
                 names.append(f"🍎 {udev.short_label()} ({s})")
 
-        placeholder = "⬇ Selecione o dispositivo"
+        placeholder = t("transfer.select_device")
         if not names:
-            names = ["Nenhum dispositivo"]
+            names = [t("transfer.no_device")]
 
         # Preserve current user selection if the device is still available
         prev_src = self.transfer_source_menu.get()
@@ -3859,9 +3898,9 @@ class ADBToolkitApp(ctk.CTk):
         self.transfer_source_menu.configure(values=names)
         self.transfer_target_menu.configure(values=names)
 
-        if names == ["Nenhum dispositivo"]:
-            self.transfer_source_menu.set("Nenhum dispositivo")
-            self.transfer_target_menu.set("Nenhum dispositivo")
+        if names == [t("transfer.no_device")]:
+            self.transfer_source_menu.set(t("transfer.no_device"))
+            self.transfer_target_menu.set(t("transfer.no_device"))
             return
 
         # Keep previous selection ONLY if it's still valid — never auto-pick
@@ -3886,10 +3925,10 @@ class ADBToolkitApp(ctk.CTk):
         tgt = self._get_serial_from_menu(self.transfer_target_menu.get())
 
         if not src or not tgt:
-            messagebox.showwarning("Transferência", "Selecione os dispositivos de origem e destino")
+            messagebox.showwarning(t("transfer.title"), t("transfer.select_both"))
             return
         if src == tgt:
-            messagebox.showwarning("Transferência", "Origem e destino devem ser diferentes")
+            messagebox.showwarning(t("transfer.title"), t("transfer.different_devices"))
             return
 
         # Detect cross-platform scenario
@@ -3937,10 +3976,10 @@ class ADBToolkitApp(ctk.CTk):
             try:
                 self.transfer_mgr.set_progress_callback(self._on_transfer_progress)
                 success = self.transfer_mgr.transfer(src, tgt, config)
-                msg = "Transferência concluída!" if success else "Transferência concluída com erros."
-                self.after(0, lambda: messagebox.showinfo("Transferência", msg))
+                msg = t("transfer.completed") if success else t("transfer.completed_errors")
+                self.after(0, lambda: messagebox.showinfo(t("transfer.title"), msg))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
             finally:
                 self.after(0, self._transfer_finished)
 
@@ -3965,7 +4004,7 @@ class ADBToolkitApp(ctk.CTk):
         dlg.attributes("-topmost", True)
 
         ctk.CTkLabel(
-            dlg, text="🔀 Transferência Cross-Platform",
+            dlg, text=t("cross_transfer.title"),
             font=ctk.CTkFont(size=18, weight="bold"),
         ).pack(padx=16, pady=(16, 4))
 
@@ -3981,19 +4020,19 @@ class ADBToolkitApp(ctk.CTk):
         cat_frame.pack(fill="x", padx=16, pady=8)
 
         ctk.CTkLabel(
-            cat_frame, text="Selecione o que transferir:",
+            cat_frame, text=t("cross_transfer.select_what"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
         cross_cats = {
-            "photos": ("📸 Fotos", True),
-            "videos": ("🎬 Vídeos", True),
-            "music": ("🎵 Músicas", True),
-            "documents": ("📄 Documentos", True),
-            "contacts": ("👤 Contatos", True),
+            "photos": (t("cross_transfer.cat_photos"), True),
+            "videos": (t("cross_transfer.cat_videos"), True),
+            "music": (t("cross_transfer.cat_music"), True),
+            "documents": (t("cross_transfer.cat_documents"), True),
+            "contacts": (t("cross_transfer.cat_contacts"), True),
             "sms": ("💬 SMS", True),
-            "calendar": ("📅 Calendário", True),
-            "whatsapp": ("💬 WhatsApp (mídias)", True),
+            "calendar": (t("cross_transfer.cat_calendar"), True),
+            "whatsapp": (t("cross_transfer.cat_whatsapp"), True),
         }
         cross_vars: Dict[str, ctk.BooleanVar] = {}
         for key, (label, default) in cross_cats.items():
@@ -4006,7 +4045,7 @@ class ADBToolkitApp(ctk.CTk):
         # HEIC conversion option  
         heic_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(
-            cat_frame, text="🖼️ Converter HEIC → JPEG (iOS → Android)",
+            cat_frame, text=t("cross_transfer.convert_heic"),
             variable=heic_var,
         ).pack(anchor="w", padx=20, pady=2)
 
@@ -4015,9 +4054,7 @@ class ADBToolkitApp(ctk.CTk):
         warn_frame.pack(fill="x", padx=16, pady=(8, 4))
         ctk.CTkLabel(
             warn_frame,
-            text="⚠️ Apps não podem ser transferidos entre plataformas.\n"
-                 "⚠️ SMS: importação no iOS é limitada (apenas referência).\n"
-                 "⚠️ WhatsApp: apenas mídias — conversas use a migração oficial.",
+            text=t("cross_transfer.warnings"),
             font=ctk.CTkFont(size=11),
             text_color=COLORS["warning"],
             justify="left",
@@ -4081,13 +4118,13 @@ class ADBToolkitApp(ctk.CTk):
                             log.warning("WhatsApp transfer error: %s", wa_exc)
 
                     msg = (
-                        "✅ Transferência cross-platform concluída!"
+                        t("cross_transfer.success")
                         if success else
-                        "⚠️ Transferência concluída com alguns erros."
+                        t("cross_transfer.success_with_errors")
                     )
-                    self.after(0, lambda: messagebox.showinfo("Transferência", msg))
+                    self.after(0, lambda: messagebox.showinfo(t("transfer.title"), msg))
                 except Exception as exc:
-                    self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                    self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
                 finally:
                     self.after(0, self._transfer_finished)
 
@@ -4095,7 +4132,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkButton(
             btn_frame,
-            text="✅ Iniciar Transferência",
+            text=t("cross_transfer.btn_start"),
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
@@ -4105,7 +4142,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkButton(
             btn_frame,
-            text="Cancelar",
+            text=t("common.cancel"),
             fg_color=COLORS["text_dim"],
             height=42, width=120,
             command=dlg.destroy,
@@ -4118,18 +4155,18 @@ class ADBToolkitApp(ctk.CTk):
                 return
             try:
                 phase_labels = {
-                    "initializing": "Inicializando",
-                    "contacts": "Contatos",
+                    "initializing": t("progress.initializing"),
+                    "contacts": t("progress.contacts"),
                     "sms": "SMS",
-                    "calendar": "Calendário",
-                    "photos": "Fotos",
-                    "videos": "Vídeos",
-                    "music": "Músicas",
-                    "documents": "Documentos",
+                    "calendar": t("progress.calendar"),
+                    "photos": t("progress.photos"),
+                    "videos": t("progress.videos"),
+                    "music": t("progress.music"),
+                    "documents": t("progress.documents"),
                     "whatsapp": "WhatsApp",
-                    "complete": "Concluído",
-                    "complete_with_errors": "Concluído (com erros)",
-                    "error": "Erro",
+                    "complete": t("progress.complete"),
+                    "complete_with_errors": t("progress.complete_errors"),
+                    "error": t("common.error"),
                 }
                 label = phase_labels.get(p.phase, p.phase)
                 self.transfer_progress_label.configure(
@@ -4138,11 +4175,11 @@ class ADBToolkitApp(ctk.CTk):
                 self.transfer_progress_bar.set(p.percent / 100)
                 detail = ""
                 if p.elapsed_seconds > 0:
-                    detail = f"Tempo: {format_duration(p.elapsed_seconds)}"
+                    detail = f"{t('common.time')}: {format_duration(p.elapsed_seconds)}"
                 if p.errors:
-                    detail += f"  |  Erros: {len(p.errors)}"
+                    detail += f"  |  {t('common.errors')}: {len(p.errors)}"
                 if p.warnings:
-                    detail += f"  |  Avisos: {len(p.warnings)}"
+                    detail += f"  |  {t('common.warnings')}: {len(p.warnings)}"
                 self.transfer_progress_detail.configure(text=detail)
             except Exception:
                 pass
@@ -4155,11 +4192,11 @@ class ADBToolkitApp(ctk.CTk):
         """Detect unsynced apps on source device for transfer."""
         src_serial = self._get_serial_from_menu(self.transfer_source_menu.get())
         if not src_serial:
-            messagebox.showwarning("Detectar", "Selecione o dispositivo de origem primeiro")
+            messagebox.showwarning(t("transfer.detect"), t("transfer.select_source"))
             return
 
         self.btn_detect_unsynced_transfer.configure(state="disabled", text="⏳ ...")
-        self._set_status("Escaneando apps no dispositivo de origem...")
+        self._set_status(t("transfer.scanning_source"))
 
         def _run():
             try:
@@ -4168,9 +4205,9 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._on_unsynced_transfer_detected(detected))
             except Exception as exc:
                 log.warning("Transfer unsynced detection error: %s", exc)
-                self.after(0, lambda: self._set_status(f"Erro: {exc}"))
+                self.after(0, lambda: self._set_status(f"{t('common.error')}: {exc}"))
                 self.after(0, lambda: self.btn_detect_unsynced_transfer.configure(
-                    state="normal", text="🔎 Detectar",
+                    state="normal", text=t("transfer.btn_detect"),
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -4179,10 +4216,10 @@ class ADBToolkitApp(ctk.CTk):
         """Detect messaging apps on source device for transfer (uses source dropdown)."""
         src_serial = self._get_serial_from_menu(self.transfer_source_menu.get())
         if not src_serial:
-            messagebox.showwarning("Detectar", "Selecione o dispositivo de origem primeiro")
+            messagebox.showwarning(t("transfer.detect"), t("transfer.select_source"))
             return
 
-        self._set_status("Detectando apps de mensagem no dispositivo de origem...")
+        self._set_status(t("transfer.detecting_messaging"))
 
         def _run():
             try:
@@ -4191,21 +4228,21 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._on_messaging_transfer_detected(installed))
             except Exception as exc:
                 log.warning("Transfer messaging detection error: %s", exc)
-                self.after(0, lambda: self._set_status(f"Erro: {exc}"))
+                self.after(0, lambda: self._set_status(f"{t('common.error')}: {exc}"))
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _on_messaging_transfer_detected(self, installed: Dict):
         """Update transfer tab messaging checkboxes based on detection."""
         count = len(installed)
-        self._set_status(f"{count} app(s) de mensagem detectado(s) no dispositivo de origem")
+        self._set_status(t("transfer.messaging_detected", count=count))
         for key in self.transfer_msg_vars:
             self.transfer_msg_vars[key].set(key in installed)
 
     def _on_unsynced_transfer_detected(self, detected: List[DetectedApp]):
         """Render detected unsynced apps in the transfer tab."""
         self._transfer_detected_apps = detected
-        self.btn_detect_unsynced_transfer.configure(state="normal", text="🔎 Detectar")
+        self.btn_detect_unsynced_transfer.configure(state="normal", text=t("transfer.btn_detect"))
 
         for w in self.transfer_unsynced_frame.winfo_children():
             w.destroy()
@@ -4214,7 +4251,7 @@ class ADBToolkitApp(ctk.CTk):
         if not detected:
             ctk.CTkLabel(
                 self.transfer_unsynced_frame,
-                text="✅ Nenhum app adicional detectado",
+                text=t("transfer.no_unsynced"),
                 text_color="#06d6a0",
             ).pack(pady=6)
             return
@@ -4255,7 +4292,7 @@ class ADBToolkitApp(ctk.CTk):
                 text_color=rc, font=ctk.CTkFont(size=10),
             ).pack(side="right", padx=4)
 
-        self._set_status(f"{len(detected)} app(s) com dados locais no dispositivo de origem")
+        self._set_status(t("transfer.apps_detected", count=len(detected)))
 
     def _clone_device(self):
         """Full clone via a single confirmation dialog.
@@ -4276,8 +4313,8 @@ class ADBToolkitApp(ctk.CTk):
         all_serials = list(dev_labels.values())
         if len(all_serials) < 2:
             messagebox.showwarning(
-                "Clonar Dispositivo",
-                "Conecte pelo menos 2 dispositivos para clonar.",
+                t("clone.title"),
+                t("clone.need_two_devices"),
             )
             return
 
@@ -4297,7 +4334,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # --- Dialog window ---
         dlg = ctk.CTkToplevel(self)
-        dlg.title("📋 Clonar Dispositivo")
+        dlg.title(t("clone.dialog_title"))
         dlg.geometry("580x520")
         dlg.resizable(False, False)
         dlg.grab_set()
@@ -4306,13 +4343,13 @@ class ADBToolkitApp(ctk.CTk):
 
         # Title
         ctk.CTkLabel(
-            dlg, text="📋 Clone Completo",
+            dlg, text=t("clone.header"),
             font=ctk.CTkFont(size=18, weight="bold"),
         ).pack(padx=16, pady=(16, 4))
 
         ctk.CTkLabel(
             dlg,
-            text="Selecione origem e destino, depois confirme.",
+            text=t("clone.subtitle"),
             font=ctk.CTkFont(size=12),
             text_color=COLORS["text_dim"],
         ).pack(padx=16, pady=(0, 12))
@@ -4322,7 +4359,7 @@ class ADBToolkitApp(ctk.CTk):
         src_frame.pack(fill="x", padx=16, pady=4)
 
         ctk.CTkLabel(
-            src_frame, text="📱 ORIGEM (copiar DE):",
+            src_frame, text=t("clone.source_label"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 2))
 
@@ -4338,7 +4375,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # ---- Arrow ----
         ctk.CTkLabel(
-            dlg, text="⬇️  Dados serão copiados para  ⬇️",
+            dlg, text=t("clone.arrow_label"),
             font=ctk.CTkFont(size=13), text_color=COLORS["warning"],
         ).pack(pady=4)
 
@@ -4347,7 +4384,7 @@ class ADBToolkitApp(ctk.CTk):
         tgt_frame.pack(fill="x", padx=16, pady=4)
 
         ctk.CTkLabel(
-            tgt_frame, text="📱 DESTINO (copiar PARA):",
+            tgt_frame, text=t("clone.target_label"),
             font=ctk.CTkFont(size=13, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 2))
 
@@ -4384,13 +4421,12 @@ class ADBToolkitApp(ctk.CTk):
             s_tgt = dev_labels.get(tgt_var.get())
             if s_src and s_tgt and self.device_mgr.is_cross_platform(s_src, s_tgt):
                 scope_lbl.configure(
-                    text="🔀 Cross-Platform: Fotos • Vídeos • Músicas • Documentos • Contatos • SMS • Calendário\n"
-                         "⚠️ Apps NÃO são transferidos entre plataformas diferentes.",
+                    text=t("clone.scope_cross"),
                     text_color=COLORS["warning"],
                 )
             else:
                 scope_lbl.configure(
-                    text="Será copiado: Memória interna • Aplicativos • Contatos • SMS • Apps de mensagem",
+                    text=t("clone.scope_android"),
                     text_color=COLORS["text_dim"],
                 )
 
@@ -4403,9 +4439,7 @@ class ADBToolkitApp(ctk.CTk):
 
         scope_lbl = ctk.CTkLabel(
             scope_frame,
-            text=(
-                "Será copiado:  Memória interna  •  Aplicativos  •  Contatos  •  SMS  •  Apps de mensagem"
-            ),
+            text=t("clone.scope_android"),
             font=ctk.CTkFont(size=11),
             text_color=COLORS["text_dim"],
             wraplength=540,
@@ -4420,13 +4454,13 @@ class ADBToolkitApp(ctk.CTk):
 
         dlg_ignore_cache = ctk.BooleanVar(value=self.var_ignore_cache.get())
         ctk.CTkCheckBox(
-            filter_frame, text="🗑️ Ignorar Caches",
+            filter_frame, text=t("transfer.filter_cache"),
             variable=dlg_ignore_cache,
         ).pack(side="left", padx=8)
 
         dlg_ignore_thumbs = ctk.BooleanVar(value=self.var_ignore_thumbnails.get())
         ctk.CTkCheckBox(
-            filter_frame, text="🖼️ Ignorar Dumps/Thumbnails",
+            filter_frame, text=t("transfer.filter_thumbs"),
             variable=dlg_ignore_thumbs,
         ).pack(side="left", padx=8)
 
@@ -4439,10 +4473,10 @@ class ADBToolkitApp(ctk.CTk):
             tgt_serial = dev_labels.get(tgt_var.get())
 
             if not src_serial or not tgt_serial:
-                messagebox.showwarning("Clone", "Selecione ambos os dispositivos.", parent=dlg)
+                messagebox.showwarning(t("clone.title"), t("clone.select_both"), parent=dlg)
                 return
             if src_serial == tgt_serial:
-                messagebox.showwarning("Clone", "Origem e destino devem ser DIFERENTES.", parent=dlg)
+                messagebox.showwarning(t("clone.title"), t("clone.different_devices"), parent=dlg)
                 return
 
             # Resolve names from either Android or Unified dict
@@ -4459,23 +4493,11 @@ class ADBToolkitApp(ctk.CTk):
 
             # Final safety confirmation
             if is_cross:
-                confirm_msg = (
-                    f"🔀 Cross-Platform\n"
-                    f"{src_name}  ➡️  {tgt_name}\n\n"
-                    f"Serão copiados: Fotos, Vídeos, Músicas, Documentos, Contatos, SMS, Calendário.\n"
-                    f"Apps NÃO serão transferidos (plataformas incompatíveis).\n\n"
-                    f"Confirma?"
-                )
+                confirm_msg = t("clone.confirm_cross", src=src_name, tgt=tgt_name)
             else:
-                confirm_msg = (
-                    f"{src_name}  ➡️  {tgt_name}\n\n"
-                    f"Todos os dados da memória interna do {src_name}\n"
-                    f"serão copiados para o {tgt_name}.\n\n"
-                    f"Os dados existentes no destino serão sobrescritos.\n\n"
-                    f"Confirma?"
-                )
+                confirm_msg = t("clone.confirm_android", src=src_name, tgt=tgt_name)
 
-            if not messagebox.askyesno("⚠️ Confirmação Final", confirm_msg, parent=dlg):
+            if not messagebox.askyesno(t("clone.final_confirm"), confirm_msg, parent=dlg):
                 return
 
             # Capture settings and close dialog
@@ -4492,7 +4514,7 @@ class ADBToolkitApp(ctk.CTk):
 
             if is_cross:
                 # Cross-platform clone
-                self._set_status(f"Transferência cross-platform: {src_name} ➡️ {tgt_name}")
+                self._set_status(t("clone.cross_status", src=src_name, tgt=tgt_name))
 
                 def _run():
                     try:
@@ -4503,20 +4525,20 @@ class ADBToolkitApp(ctk.CTk):
                             src_serial, tgt_serial
                         )
                         msg = (
-                            "✅ Transferência cross-platform concluída!"
+                            t("cross_transfer.success")
                             if success else
-                            "⚠️ Transferência concluída com alguns erros."
+                            t("cross_transfer.success_with_errors")
                         )
-                        self.after(0, lambda: messagebox.showinfo("Clone", msg))
+                        self.after(0, lambda: messagebox.showinfo(t("clone.title"), msg))
                     except Exception as exc:
-                        self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                        self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
                     finally:
                         self.after(0, self._transfer_finished)
 
                 threading.Thread(target=_run, daemon=True).start()
             else:
                 # Android-to-Android clone
-                self._set_status(f"Indexando memória interna de {src_name}...")
+                self._set_status(t("clone.indexing", name=src_name))
 
                 def _run():
                     try:
@@ -4528,13 +4550,13 @@ class ADBToolkitApp(ctk.CTk):
                             ignore_thumbnails=_it,
                         )
                         msg = (
-                            "✅ Clone completo concluído com sucesso!"
+                            t("clone.success")
                             if success else
-                            "⚠️ Clone concluído com alguns erros. Verifique o log."
+                            t("clone.success_with_errors")
                         )
-                        self.after(0, lambda: messagebox.showinfo("Clone", msg))
+                        self.after(0, lambda: messagebox.showinfo(t("clone.title"), msg))
                     except Exception as exc:
-                        self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                        self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
                     finally:
                         self.after(0, self._transfer_finished)
 
@@ -4542,7 +4564,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkButton(
             btn_frame,
-            text="✅ Confirmar e Clonar",
+            text=t("clone.btn_confirm"),
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=COLORS["accent"],
             hover_color=COLORS["accent_hover"],
@@ -4552,7 +4574,7 @@ class ADBToolkitApp(ctk.CTk):
 
         ctk.CTkButton(
             btn_frame,
-            text="Cancelar",
+            text=t("common.cancel"),
             fg_color=COLORS["text_dim"],
             height=42, width=120,
             command=dlg.destroy,
@@ -4564,15 +4586,15 @@ class ADBToolkitApp(ctk.CTk):
                 return
             try:
                 phase_labels = {
-                    "initializing": "Inicializando",
-                    "indexing": "Indexando arquivos",
-                    "streaming": "Transferindo (streaming)",
-                    "backing_up": "Fazendo backup",
-                    "restoring": "Restaurando",
-                    "verifying": "Verificando integridade",
-                    "complete": "Concluído",
-                    "complete_with_errors": "Concluído (com erros)",
-                    "error": "Erro",
+                    "initializing": t("progress.initializing"),
+                    "indexing": t("progress.indexing"),
+                    "streaming": t("progress.streaming"),
+                    "backing_up": t("progress.backing_up"),
+                    "restoring": t("progress.restoring"),
+                    "verifying": t("progress.verifying"),
+                    "complete": t("progress.complete"),
+                    "complete_with_errors": t("progress.complete_errors"),
+                    "error": t("common.error"),
                 }
                 label = phase_labels.get(p.phase, p.phase)
                 self.transfer_progress_label.configure(
@@ -4581,9 +4603,9 @@ class ADBToolkitApp(ctk.CTk):
                 self.transfer_progress_bar.set(p.percent / 100)
                 detail = ""
                 if p.elapsed_seconds > 0:
-                    detail = f"Tempo: {format_duration(p.elapsed_seconds)}"
+                    detail = f"{t('common.time')}: {format_duration(p.elapsed_seconds)}"
                 if p.errors:
-                    detail += f"  |  Erros: {len(p.errors)}"
+                    detail += f"  |  {t('common.errors')}: {len(p.errors)}"
                 self.transfer_progress_detail.configure(text=detail)
             except Exception:
                 pass
@@ -4595,7 +4617,7 @@ class ADBToolkitApp(ctk.CTk):
         self.restore_mgr.cancel()
         if hasattr(self, "cross_transfer_mgr") and self.cross_transfer_mgr:
             self.cross_transfer_mgr.cancel()
-        self._set_status("Transferência cancelada")
+        self._set_status(t("transfer.cancelled"))
 
     def _transfer_finished(self):
         self._unlock_ui()
@@ -4604,7 +4626,7 @@ class ADBToolkitApp(ctk.CTk):
     # Driver operations
     # ==================================================================
     def _check_drivers(self):
-        self._set_status("Verificando drivers...")
+        self._set_status(t("drivers.checking"))
 
         def _run():
             status = self.driver_mgr.check_driver_status()
@@ -4618,38 +4640,37 @@ class ADBToolkitApp(ctk.CTk):
 
         if not status.is_windows:
             self.driver_status_text.insert("end",
-                "✅ Drivers USB não são necessários nesta plataforma (Linux/macOS).\n"
-                "O ADB funciona nativamente."
+                t("drivers.not_needed")
             )
         else:
             lines = []
             if status.drivers_installed:
-                lines.append("✅ Drivers ADB detectados no sistema")
+                lines.append(t("drivers.installed"))
             else:
-                lines.append("❌ Drivers ADB NÃO detectados")
+                lines.append(t("drivers.not_installed"))
 
-            lines.append(f"\n📱 Dispositivos Android no Device Manager: {status.android_devices_detected}")
+            lines.append(t("drivers.android_count", count=status.android_devices_detected))
 
             if status.devices_needing_driver:
-                lines.append(f"\n⚠️ Dispositivos precisando de driver: {len(status.devices_needing_driver)}")
+                lines.append(t("drivers.need_driver", count=len(status.devices_needing_driver)))
                 for d in status.devices_needing_driver:
                     lines.append(f"   - {d.get('caption', 'Unknown')} ({d.get('device_id', '')})")
             else:
-                lines.append("\n✅ Todos os dispositivos com drivers corretos")
+                lines.append(t("drivers.all_ok"))
 
             if status.error:
-                lines.append(f"\n⚠️ Erro na detecção: {status.error}")
+                lines.append(t("drivers.detection_error", error=status.error))
 
             self.driver_status_text.insert("end", "\n".join(lines))
 
         self.driver_status_text.configure(state="disabled")
-        self._set_status("Verificação de drivers concluída")
+        self._set_status(t("drivers.check_done"))
 
     def _install_google_driver(self):
         if not self.driver_mgr.is_admin():
             messagebox.showwarning(
-                "Permissão",
-                "É necessário executar como Administrador para instalar drivers.",
+                t("common.permission"),
+                t("common.admin_required"),
             )
             return
         self._run_driver_install(self.driver_mgr.install_google_usb_driver)
@@ -4659,7 +4680,7 @@ class ADBToolkitApp(ctk.CTk):
 
     def _auto_install_drivers(self):
         if os.name != "nt":
-            self._set_status("Instalação de drivers não necessária nesta plataforma")
+            self._set_status(t("drivers.not_needed_platform"))
             return
         if self._driver_install_running:
             return
@@ -4668,8 +4689,8 @@ class ADBToolkitApp(ctk.CTk):
     def _install_samsung_driver(self):
         if not self.driver_mgr.is_admin():
             messagebox.showwarning(
-                "Permissão",
-                "É necessário executar como Administrador para instalar drivers.",
+                t("common.permission"),
+                t("common.admin_required"),
             )
             return
         self._run_driver_install(self.driver_mgr.install_samsung_driver)
@@ -4677,8 +4698,8 @@ class ADBToolkitApp(ctk.CTk):
     def _install_qualcomm_driver(self):
         if not self.driver_mgr.is_admin():
             messagebox.showwarning(
-                "Permissão",
-                "É necessário executar como Administrador para instalar drivers.",
+                t("common.permission"),
+                t("common.admin_required"),
             )
             return
         self._run_driver_install(self.driver_mgr.install_qualcomm_driver)
@@ -4686,8 +4707,8 @@ class ADBToolkitApp(ctk.CTk):
     def _install_mediatek_driver(self):
         if not self.driver_mgr.is_admin():
             messagebox.showwarning(
-                "Permissão",
-                "É necessário executar como Administrador para instalar drivers.",
+                t("common.permission"),
+                t("common.admin_required"),
             )
             return
         self._run_driver_install(self.driver_mgr.install_mediatek_driver)
@@ -4695,8 +4716,8 @@ class ADBToolkitApp(ctk.CTk):
     def _install_intel_driver(self):
         if not self.driver_mgr.is_admin():
             messagebox.showwarning(
-                "Permissão",
-                "É necessário executar como Administrador para instalar drivers.",
+                t("common.permission"),
+                t("common.admin_required"),
             )
             return
         self._run_driver_install(self.driver_mgr.install_intel_driver)
@@ -4704,11 +4725,87 @@ class ADBToolkitApp(ctk.CTk):
     def _install_all_chipset_drivers(self):
         if not self.driver_mgr.is_admin():
             messagebox.showwarning(
-                "Permissão",
-                "É necessário executar como Administrador para instalar drivers.",
+                t("common.permission"),
+                t("common.admin_required"),
             )
             return
         self._run_driver_install(self.driver_mgr.install_all_chipset_drivers)
+
+    # -- Apple / iOS driver callbacks ----------------------------------------
+    def _check_apple_drivers(self):
+        """Check Apple/iOS driver status and display results."""
+        self._set_status(t("drivers.checking"))
+
+        def _run():
+            from .driver_manager import check_apple_driver_status
+            status = check_apple_driver_status()
+            self.after(0, lambda: self._display_apple_driver_status(status))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _display_apple_driver_status(self, status: dict):
+        self.driver_status_text.configure(state="normal")
+        self.driver_status_text.delete("1.0", "end")
+
+        lines = []
+        if status.get("itunes_installed"):
+            lines.append(t("drivers.apple.itunes_installed"))
+        else:
+            lines.append(t("drivers.apple.itunes_not_installed"))
+
+        if status.get("amds_running"):
+            lines.append(t("drivers.apple.service_running"))
+        else:
+            lines.append(t("drivers.apple.service_stopped"))
+
+        if status.get("driver_inf_found"):
+            lines.append(t("drivers.apple.driver_found"))
+        else:
+            lines.append(t("drivers.apple.driver_not_found"))
+
+        ios_count = status.get("ios_devices_detected", 0)
+        if ios_count:
+            lines.append(t("drivers.apple.ios_count", count=ios_count))
+
+        if status.get("error"):
+            lines.append(f"\n⚠️ {status['error']}")
+
+        if not status.get("itunes_installed"):
+            lines.append(f"\n{t('drivers.apple.needs_itunes')}")
+
+        self.driver_status_text.insert("end", "\n".join(lines))
+        self.driver_status_text.configure(state="disabled")
+        self._set_status(t("drivers.apple.check_done"))
+
+    def _install_apple_drivers(self):
+        """Install Apple/iOS drivers (iTunes + AMDS)."""
+        self._set_status(t("drivers.apple.installing"))
+
+        def _progress(msg: str, pct: int):
+            if self._closing:
+                return
+            self._safe_after(0, lambda: self.driver_progress_label.configure(text=msg))
+            self._safe_after(0, lambda: self.driver_progress_bar.set(pct / 100))
+
+        def _run():
+            from .driver_manager import install_apple_drivers
+            try:
+                success = install_apple_drivers(progress_cb=_progress)
+                if success:
+                    self._safe_after(0, lambda: self._set_status(
+                        t("drivers.apple.install_done")
+                    ))
+                else:
+                    self._safe_after(0, lambda: self._set_status(
+                        t("drivers.apple.install_failed")
+                    ))
+            except Exception as exc:
+                log.exception("Apple driver install error: %s", exc)
+                self._safe_after(0, lambda: self._set_status(
+                    t("drivers.apple.install_failed")
+                ))
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _run_driver_install(self, install_func):
         if self._driver_install_running:
@@ -4728,7 +4825,7 @@ class ADBToolkitApp(ctk.CTk):
                     return
                 if success:
                     self._safe_after(0, lambda: self._set_status(
-                        "Driver instalado com sucesso!"
+                        t("drivers.install_success")
                     ))
                     # Stop monitor, restart ADB, then resume monitor
                     self.adb.stop_device_monitor()
@@ -4738,7 +4835,7 @@ class ADBToolkitApp(ctk.CTk):
                     self._safe_after(2000, self._refresh_devices)
                 else:
                     self._safe_after(0, lambda: self._set_status(
-                        "Instalação do driver falhou ou foi cancelada."
+                        t("drivers.install_failed")
                     ))
             except Exception as exc:
                 log.exception("Driver install thread error: %s", exc)
@@ -4750,23 +4847,30 @@ class ADBToolkitApp(ctk.CTk):
     # ==================================================================
     # Settings operations
     # ==================================================================
+    def _on_language_changed(self, selection: str):
+        """Handle language dropdown change."""
+        code = self._lang_code_map.get(selection, "en")
+        set_language(code)
+        self.config.set("app.language", code)
+        self._set_status(t("settings.language_changed", lang=selection))
+
     def _browse_adb(self):
         path = filedialog.askopenfilename(
-            title="Selecionar ADB",
-            filetypes=[("Executável", "*.exe"), ("Todos", "*.*")],
+            title=t("settings.label_adb_path"),
+            filetypes=[("Executable", "*.exe"), ("All", "*.*")],
         )
         if path:
             self.entry_adb_path.delete(0, "end")
             self.entry_adb_path.insert(0, path)
 
     def _browse_backup_dir(self):
-        path = filedialog.askdirectory(title="Selecionar Pasta de Backups")
+        path = filedialog.askdirectory(title=t("settings.label_backup_dir"))
         if path:
             self.entry_backup_dir.delete(0, "end")
             self.entry_backup_dir.insert(0, path)
 
     def _download_platform_tools(self):
-        self._set_status("Baixando Platform Tools...")
+        self._set_status(t("settings.downloading_adb"))
 
         def _run():
             try:
@@ -4789,17 +4893,17 @@ class ADBToolkitApp(ctk.CTk):
             admin = is_admin()
 
             if in_path:
-                txt = "✅ ADB está no PATH do sistema (acessível via cmd/terminal)"
+                txt = t("settings.path_in_path")
                 color = COLORS["success"]
             elif adb_dir:
-                txt = f"⚠️ ADB não está no PATH. Diretório: {adb_dir}"
+                txt = t("settings.path_not_in_path", dir=adb_dir)
                 color = COLORS["warning"]
             else:
-                txt = "❌ Platform-tools não encontrado. Baixe primeiro."
+                txt = t("settings.path_not_found")
                 color = COLORS["error"]
 
             if not admin:
-                txt += "\n⚠️ Sem privilégios admin — modificar PATH pode falhar"
+                txt += "\n" + t("settings.path_no_admin")
 
             self._safe_after(0, lambda: self.lbl_path_status.configure(
                 text=txt, text_color=color,
@@ -4813,41 +4917,39 @@ class ADBToolkitApp(ctk.CTk):
         if not adb_dir:
             messagebox.showwarning(
                 "ADB PATH",
-                "Platform-tools não encontrado.\n"
-                "Baixe primeiro usando o botão acima.",
+                t("settings.path_download_first"),
             )
             return
 
-        self._set_status("Adicionando ADB ao PATH...")
+        self._set_status(t("settings.adding_to_path"))
         ok, msg = add_adb_to_path(adb_dir)
         if ok:
             messagebox.showinfo("ADB PATH", msg)
         else:
             messagebox.showerror("ADB PATH", msg)
-        self._set_status("Pronto")
+        self._set_status(t("common.done"))
         threading.Thread(target=self._refresh_path_status, daemon=True).start()
 
     def _remove_adb_from_path(self):
         """Remove ADB platform-tools from system PATH."""
         adb_dir = get_adb_dir(self.adb.base_dir)
         if not adb_dir:
-            messagebox.showinfo("ADB PATH", "Platform-tools não encontrado.")
+            messagebox.showinfo("ADB PATH", t("settings.path_not_found"))
             return
 
         if not messagebox.askyesno(
-            "Remover ADB do PATH",
-            "Tem certeza que deseja remover o ADB do PATH do sistema?\n\n"
-            "O ADB não será mais acessível diretamente via cmd/terminal.",
+            t("settings.remove_path_title"),
+            t("settings.remove_path_msg"),
         ):
             return
 
-        self._set_status("Removendo ADB do PATH...")
+        self._set_status(t("settings.removing_from_path"))
         ok, msg = remove_adb_from_path(adb_dir)
         if ok:
             messagebox.showinfo("ADB PATH", msg)
         else:
             messagebox.showerror("ADB PATH", msg)
-        self._set_status("Pronto")
+        self._set_status(t("common.done"))
         threading.Thread(target=self._refresh_path_status, daemon=True).start()
 
     def _toggle_auto_threads(self):
@@ -4939,8 +5041,8 @@ class ADBToolkitApp(ctk.CTk):
         self._virt_toggle_var.set(self.settings_virt_var.get())
         threading.Thread(target=self._init_accel_footer, daemon=True).start()
 
-        self._set_status("Configurações salvas")
-        messagebox.showinfo("Configurações", "Configurações salvas com sucesso!")
+        self._set_status(t("settings.saved"))
+        messagebox.showinfo(t("settings.title"), t("settings.saved"))
 
     def _load_settings_gpu_info(self):
         """Background: populate GPU/virt info in settings tab."""
@@ -4952,7 +5054,7 @@ class ADBToolkitApp(ctk.CTk):
         except Exception as exc:
             self._safe_after(
                 0, lambda: self.lbl_settings_gpu_info.configure(
-                    text=f"Erro ao detectar GPUs: {exc}",
+                    text=f"{t('common.error')}: {exc}",
                 ),
             )
 
@@ -4963,9 +5065,8 @@ class ADBToolkitApp(ctk.CTk):
         """Get a device serial, asking user if multiple are connected."""
         if not self.devices:
             messagebox.showwarning(
-                "Dispositivo",
-                "Nenhum dispositivo conectado.\n"
-                "Conecte um dispositivo Android com Depuração USB ativada.",
+                t("devices.no_device_title"),
+                t("devices.no_device_msg"),
             )
             return None
 
