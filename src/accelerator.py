@@ -537,7 +537,16 @@ def parallel_checksum(
     total = len(file_paths)
     done_count = 0
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+    # Use the shared I/O pool when available; otherwise fall back to a local one
+    try:
+        from .adb_base import get_io_pool as _get_pool
+        pool = _get_pool()
+        _owns_pool = False
+    except Exception:
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        _owns_pool = True
+
+    try:
         if use_multi:
             futures = {
                 pool.submit(_rr_hash, fp, i): fp
@@ -562,6 +571,9 @@ def parallel_checksum(
                     progress_cb(done_count, total, fp)
                 except Exception:
                     pass
+    finally:
+        if _owns_pool:
+            pool.shutdown(wait=False)
 
     log.info("Checksummed %d files via %s (%d workers)", total, label, max_workers)
     return results
@@ -667,11 +679,13 @@ class TransferAccelerator:
 
         Heuristic
         ---------
-        * Pull (device → PC):  I/O-bound, benefits from more concurrency.
-          Use ``min(cpu_cores, 8)`` — USB bandwidth is the real bottleneck so
-          going above 8 rarely helps.
-        * Push (PC → device):  also I/O-bound but the device flash is slower,
-          so we use a slightly lower ceiling of ``min(cpu_cores, 6)``.
+        * ADB operations are **I/O-bound** (>95 % time is USB/subprocess wait,
+          and Python releases the GIL during I/O).  We can therefore use far
+          more concurrent threads than CPU cores.
+        * Pull (device → PC):  ``min(cpu_cores * 2, 16)`` — USB bandwidth is
+          the real bottleneck; more threads keep the bus fed.
+        * Push (PC → device):  ``min(cpu_cores * 2, 12)`` — device flash is
+          slightly slower, so a lower ceiling.
         * On machines with very little RAM (< 4 GB) we clamp further.
         """
         cores = os.cpu_count() or 4
@@ -681,19 +695,39 @@ class TransferAccelerator:
         except Exception:
             ram_gb = 8.0  # assume reasonable default
 
-        # base scaling
-        pull = min(cores, 8)
-        push = min(cores, 6)
+        # I/O-optimized scaling (was cores-based; now 2× for I/O-bound workloads)
+        pull = min(cores * 2, 16)
+        push = min(cores * 2, 12)
 
         # low-RAM clamp
         if ram_gb < 4:
-            pull = min(pull, 4)
-            push = min(push, 3)
+            pull = min(pull, 6)
+            push = min(push, 4)
 
         # ensure at least 2 workers when possible
         pull = max(2, pull)
         push = max(2, push)
         return pull, push
+
+    @staticmethod
+    def io_pool_size() -> int:
+        """Optimal size for a *shared* I/O thread pool.
+
+        Since every ADB call is I/O-bound (subprocess wait + USB transfer),
+        threads spend nearly all their time blocked on I/O.  A pool of
+        ``cores × 3`` (capped at 32) provides enough capacity for multiple
+        operations to overlap without contention.
+        """
+        cores = os.cpu_count() or 4
+        try:
+            import psutil  # type: ignore[import-untyped]
+            ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+        except Exception:
+            ram_gb = 8.0
+        size = min(cores * 3, 32)
+        if ram_gb < 4:
+            size = min(size, 12)
+        return max(4, size)
 
     # --- constructor ---------------------------------------------------------
     def __init__(
@@ -767,19 +801,22 @@ class TransferAccelerator:
     def optimal_workers(self, file_count: int, avg_size_bytes: int = 0) -> int:
         """Return the ideal worker count for a batch of *file_count* files.
 
-        Considers CPU cores, file count, and average file size to avoid
-        over-subscribing either the CPU or the USB bus.
+        Considers CPU cores, file count, and average file size.
+        Since ADB operations are I/O-bound, we allow 2× core count for
+        small-to-medium files.  Large files still get fewer workers
+        because USB bandwidth becomes the sole bottleneck.
         """
         if file_count <= 1:
             return 1
         cores = os.cpu_count() or 4
-        # Large files → fewer threads (USB bandwidth-bound)
+        # Large files → fewer threads (USB bandwidth is the bottleneck)
         if avg_size_bytes > 50 * 1024 * 1024:
-            cap = min(2, cores)
-        elif avg_size_bytes > 10 * 1024 * 1024:
             cap = min(3, cores)
+        elif avg_size_bytes > 10 * 1024 * 1024:
+            cap = min(4, cores)
         else:
-            cap = min(self.max_pull_workers, cores, 8)
+            # I/O-bound small files: allow up to 2× cores
+            cap = min(self.max_pull_workers, cores * 2, 16)
         return min(cap, file_count)
 
     def summary(self) -> str:
@@ -831,9 +868,13 @@ class TransferAccelerator:
         # Workers
         cores = os.cpu_count() or "?"
         mode_label = "dinâmico" if self.auto_threads else "manual"
+        pool_sz = self.io_pool_size()
         lines.append(
             f"  Threads pull/push: {self.max_pull_workers}/{self.max_push_workers}"
             f"  ({mode_label}, {cores} cores)"
+        )
+        lines.append(
+            f"  Pool I/O compartilhado: {pool_sz} virtual threads"
         )
         lines.append(
             f"  Verificação: {'Ativada' if self.verify_checksums else 'Desativada'}"

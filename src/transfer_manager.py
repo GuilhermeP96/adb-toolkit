@@ -13,7 +13,6 @@ Orchestrates backup from source device and restore to target device:
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +23,7 @@ from .adb_base import (
     CACHE_PATTERNS,
     OperationProgress,
     THUMBNAIL_DUMP_PATTERNS,
+    run_parallel,
     safe_percent,
 )
 from .adb_core import ADBCore, DeviceInfo
@@ -631,32 +631,33 @@ class TransferManager(ADBManagerBase):
                 avg_size_bytes=sum(s for _, s in batch) // max(batch_count, 1),
             )
 
-            with ThreadPoolExecutor(max_workers=pull_workers) as pool:
-                futures = {}
-                for remote_path, _ in batch:
-                    rel = remote_path[len(storage_path):].lstrip("/")
-                    fut = pool.submit(_pull_one, remote_path, rel)
-                    futures[fut] = rel
-
-                for fut in as_completed(futures):
-                    rel = futures[fut]
-                    files_pulled += 1
-                    try:
-                        if fut.result():
-                            with _pull_lock:
-                                batch_pulled += 1
-                        else:
-                            with _pull_lock:
-                                batch_pull_errors += 1
-                    except Exception:
+            def _on_pull_done(fut):
+                nonlocal files_pulled, batch_pulled, batch_pull_errors
+                files_pulled += 1
+                try:
+                    if fut.result():
+                        with _pull_lock:
+                            batch_pulled += 1
+                    else:
                         with _pull_lock:
                             batch_pull_errors += 1
+                except Exception:
+                    with _pull_lock:
+                        batch_pull_errors += 1
+                self._transfer_progress.percent = (
+                    files_pulled / total_files * 40  # 0-40% (pull)
+                )
+                self._emit()
 
-                    self._transfer_progress.current_item = rel
-                    self._transfer_progress.percent = (
-                        files_pulled / total_files * 40  # 0-40% (pull)
-                    )
-                    self._emit()
+            run_parallel(
+                lambda rp, rel: _pull_one(rp, rel),
+                [
+                    (rp, rp[len(storage_path):].lstrip("/"))
+                    for rp, _ in batch
+                ],
+                pull_workers,
+                on_done=_on_pull_done,
+            )
 
             pulled_total += batch_pulled
             pull_errors_total += batch_pull_errors
@@ -719,32 +720,33 @@ class TransferManager(ADBManagerBase):
                 ),
             )
 
-            with ThreadPoolExecutor(max_workers=push_workers) as pool:
-                futures = {}
-                for lf in local_files:
-                    rel = lf.relative_to(storage_staging).as_posix()
-                    fut = pool.submit(_push_one, lf, rel)
-                    futures[fut] = rel
-
-                for fut in as_completed(futures):
-                    rel = futures[fut]
-                    files_pushed += 1
-                    try:
-                        if fut.result():
-                            with _push_lock:
-                                batch_pushed += 1
-                        else:
-                            with _push_lock:
-                                batch_push_errors += 1
-                    except Exception:
+            def _on_push_done(fut):
+                nonlocal files_pushed, batch_pushed, batch_push_errors
+                files_pushed += 1
+                try:
+                    if fut.result():
+                        with _push_lock:
+                            batch_pushed += 1
+                    else:
                         with _push_lock:
                             batch_push_errors += 1
+                except Exception:
+                    with _push_lock:
+                        batch_push_errors += 1
+                self._transfer_progress.percent = (
+                    40 + files_pushed / total_files * 40  # 40-80% (push)
+                )
+                self._emit()
 
-                    self._transfer_progress.current_item = rel
-                    self._transfer_progress.percent = (
-                        40 + files_pushed / total_files * 40  # 40-80% (push)
-                    )
-                    self._emit()
+            run_parallel(
+                lambda lf, rel: _push_one(lf, rel),
+                [
+                    (lf, lf.relative_to(storage_staging).as_posix())
+                    for lf in local_files
+                ],
+                push_workers,
+                on_done=_on_push_done,
+            )
 
             pushed_total += batch_pushed
             push_errors_total += batch_push_errors

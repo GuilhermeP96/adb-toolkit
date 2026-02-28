@@ -23,10 +23,11 @@ import logging
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Set, Tuple
+
+from .adb_base import get_io_pool
 
 from .adb_core import ADBCore
 from .utils import format_bytes
@@ -222,19 +223,20 @@ class CleanupManager:
                     results[mode] = ModeEstimate(mode=mode, error=str(exc))
             return results
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_to_mode = {
-                pool.submit(self._estimate_mode, serial, mode): mode
-                for mode in modes
-                if not self._cancel_flag.is_set()
-            }
-            for fut in as_completed(future_to_mode):
-                mode = future_to_mode[fut]
-                try:
-                    results[mode] = fut.result()
-                except Exception as exc:
-                    log.exception("Estimate failed for %s: %s", mode, exc)
-                    results[mode] = ModeEstimate(mode=mode, error=str(exc))
+        pool = get_io_pool()
+        from concurrent.futures import as_completed
+        future_to_mode = {
+            pool.submit(self._estimate_mode, serial, mode): mode
+            for mode in modes
+            if not self._cancel_flag.is_set()
+        }
+        for fut in as_completed(future_to_mode):
+            mode = future_to_mode[fut]
+            try:
+                results[mode] = fut.result()
+            except Exception as exc:
+                log.exception("Estimate failed for %s: %s", mode, exc)
+                results[mode] = ModeEstimate(mode=mode, error=str(exc))
         return results
 
     def _estimate_mode(self, serial: str, mode: CleanupMode) -> ModeEstimate:

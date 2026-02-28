@@ -20,7 +20,6 @@ import shutil
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +32,7 @@ from .adb_base import (
     safe_percent,
     CACHE_PATTERNS,
     THUMBNAIL_DUMP_PATTERNS,
+    run_parallel,
 )
 
 log = logging.getLogger("adb_toolkit.backup")
@@ -363,10 +363,11 @@ class BackupManager(ADBManagerBase):
         workers = self.accelerator.optimal_workers(apk_total)
         done_count = 0
 
-        def _pull_apks(pkg: str, all_paths: List[str]) -> bool:
+        def _pull_apks(pkg: str, all_paths: List[str]) -> Optional[str]:
+            """Pull APK(s) for one package. Returns pkg name on success."""
             nonlocal done_count
             if self._cancel_flag.is_set():
-                return False
+                return None
             ok = False
             try:
                 if len(all_paths) > 1:
@@ -393,21 +394,24 @@ class BackupManager(ADBManagerBase):
                     items_total=apk_total,
                     percent=50 + (done_count / apk_total * 50) if apk_total else 100,
                 ))
-            return ok
+            return pkg if ok else None
 
         log.info("Pulling %d APK packages with %d workers", apk_total, workers)
-        with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
-            futs = {
-                pool.submit(_pull_apks, pkg, paths): pkg
-                for pkg, paths in pkg_apk_map
-            }
-            for fut in as_completed(futs):
-                pkg = futs[fut]
-                try:
-                    if fut.result():
-                        backed_up.append(pkg)
-                except Exception:
-                    pass
+
+        def _on_apk_done(fut):
+            try:
+                pkg_name = fut.result()
+                if pkg_name:
+                    backed_up.append(pkg_name)
+            except Exception:
+                pass
+
+        run_parallel(
+            _pull_apks,
+            [(pkg, paths) for pkg, paths in pkg_apk_map],
+            max(workers, 1),
+            on_done=_on_apk_done,
+        )
 
         # Optionally backup app data
         if include_data and backed_up:

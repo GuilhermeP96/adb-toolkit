@@ -19,10 +19,11 @@ import os
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
+
+from .adb_base import run_parallel
 
 from .adb_core import ADBCore
 
@@ -677,13 +678,7 @@ class ToolboxManager:
                     ))
 
         log.info("Clearing cache for %d apps with %d workers", total, workers)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = [pool.submit(_clear_one, pkg) for pkg in packages]
-            for f in as_completed(futs):
-                try:
-                    f.result()
-                except Exception:
-                    pass
+        run_parallel(_clear_one, [(pkg,) for pkg in packages], workers)
 
         if progress_cb:
             progress_cb(ToolboxProgress(
@@ -728,13 +723,7 @@ class ToolboxManager:
                     ))
 
         log.info("Force-stopping %d apps with %d workers", total, workers)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = [pool.submit(_stop_one, pkg) for pkg in packages]
-            for f in as_completed(futs):
-                try:
-                    f.result()
-                except Exception:
-                    pass
+        run_parallel(_stop_one, [(pkg,) for pkg in packages], workers)
 
         if progress_cb:
             progress_cb(ToolboxProgress(

@@ -18,10 +18,25 @@ import os
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    Future,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+    FIRST_COMPLETED,
+)
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple, TYPE_CHECKING
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Tuple,
+    TYPE_CHECKING,
+)
 
 from .adb_core import ADBCore
 
@@ -29,6 +44,95 @@ if TYPE_CHECKING:
     from .accelerator import TransferAccelerator
 
 log = logging.getLogger("adb_toolkit.base")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Shared persistent I/O thread pool  ("virtual-thread" pattern)
+# ═══════════════════════════════════════════════════════════════════════════
+# All ADB operations (pull / push / shell) are I/O-bound: the calling thread
+# spends >95 % of its time blocked on a subprocess + USB transfer while the
+# GIL is released.  Instead of creating and destroying a ThreadPoolExecutor
+# per operation (which incurs ~1-5 ms overhead per OS thread on Windows), we
+# maintain a global persistent pool sized for I/O (`cores × 3`, capped at 32).
+#
+# Per-operation concurrency is then controlled via a **sliding-window**
+# submission pattern: at most `max_concurrent` tasks are in-flight at any
+# time; as one completes, the next is submitted.  This keeps the USB bus
+# fed without saturating the ADB daemon.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_io_pool: Optional[ThreadPoolExecutor] = None
+_io_pool_lock = threading.Lock()
+
+
+def get_io_pool() -> ThreadPoolExecutor:
+    """Return (and lazily create) the shared I/O thread pool."""
+    global _io_pool
+    if _io_pool is None:
+        with _io_pool_lock:
+            if _io_pool is None:
+                from .accelerator import TransferAccelerator as _TA
+                size = _TA.io_pool_size()
+                _io_pool = ThreadPoolExecutor(
+                    max_workers=size,
+                    thread_name_prefix="adb-vt",
+                )
+                log.info("Shared I/O pool created: %d virtual threads", size)
+    return _io_pool
+
+
+def run_parallel(
+    fn: Callable[..., Any],
+    items: Iterable[tuple],
+    max_concurrent: int,
+    *,
+    on_done: Optional[Callable[[Future], None]] = None,
+) -> None:
+    """Execute ``fn(*item)`` for each *item* on the shared I/O pool.
+
+    Uses a **sliding-window** strategy: at most *max_concurrent* tasks
+    run simultaneously.  As one finishes, the next is submitted.
+
+    Parameters
+    ----------
+    fn:
+        Callable receiving unpacked elements of each item tuple.
+    items:
+        Iterable of argument tuples — ``fn(*item)`` for each.
+    max_concurrent:
+        Maximum number of tasks in-flight at once.
+    on_done:
+        Optional callback invoked with each completed ``Future``.
+    """
+    pool = get_io_pool()
+    active: Dict[Future, None] = {}
+    it = iter(items)
+
+    # -- fill initial window --
+    for _ in range(max_concurrent):
+        try:
+            args = next(it)
+            active[pool.submit(fn, *args)] = None
+        except StopIteration:
+            break
+
+    # -- sliding window: as one completes, submit the next --
+    while active:
+        done_set, _ = wait(active, return_when=FIRST_COMPLETED)
+        for fut in done_set:
+            del active[fut]
+            if on_done is not None:
+                on_done(fut)
+            else:
+                try:
+                    fut.result()
+                except Exception:
+                    pass
+            try:
+                args = next(it)
+                active[pool.submit(fn, *args)] = None
+            except StopIteration:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -367,16 +471,8 @@ class ADBManagerBase:
                     percent=pct,
                 ))
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {
-                pool.submit(_pull_one, rp, fs): rp
-                for rp, fs in file_list
-            }
-            for fut in as_completed(futs):
-                try:
-                    fut.result()
-                except Exception:
-                    pass
+        # Sliding-window on the shared I/O pool
+        run_parallel(_pull_one, file_list, workers)
 
         return counters["ok"], counters["bytes"]
 
@@ -538,17 +634,14 @@ class ADBManagerBase:
                     percent=pct,
                 ))
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            futs = {}
-            for local_path, remote_path in files_to_push:
-                fsize = local_path.stat().st_size
-                fut = pool.submit(_push_one, local_path, remote_path, fsize)
-                futs[fut] = remote_path
-            for fut in as_completed(futs):
-                try:
-                    fut.result()
-                except Exception:
-                    pass
+        # Build arg tuples with pre-computed file sizes
+        push_items = [
+            (lp, rp, lp.stat().st_size)
+            for lp, rp in files_to_push
+        ]
+
+        # Sliding-window on the shared I/O pool
+        run_parallel(_push_one, push_items, workers)
 
         return counters["ok"], counters["bytes"]
 
