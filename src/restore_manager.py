@@ -528,16 +528,25 @@ class RestoreManager(ADBManagerBase):
                         elif apk_files:
                             self.adb.install_apk(str(apk_files[0]), serial)
 
-                # 2. Restore media files
+                # 2. Restore media files — parallel via push_with_progress
                 media_dir = app_dir / "media"
                 if media_dir.exists():
+                    files_to_push = []
                     for local_file in media_dir.rglob("*"):
-                        if local_file.is_file() and not self._cancel_flag.is_set():
+                        if local_file.is_file():
                             rel = local_file.relative_to(media_dir)
                             remote = "/" + str(rel).replace("\\", "/")
-                            remote_parent = os.path.dirname(remote)
-                            self.adb.run_shell(f'mkdir -p "{remote_parent}"', serial)
-                            self.adb.push(str(local_file), remote, serial)
+                            files_to_push.append((local_file, remote))
+                    if files_to_push:
+                        self.push_with_progress(
+                            serial, files_to_push,
+                            phase="restoring_messaging",
+                            sub_phase=app_key,
+                            pct_range=(
+                                safe_percent(i, total),
+                                safe_percent(i + 0.7, total),
+                            ),
+                        )
 
                 # 3. Restore app data (.ab files — skip empty ones)
                 for ab_file in app_dir.glob("*_data.ab"):
@@ -670,19 +679,25 @@ class RestoreManager(ADBManagerBase):
                         log.warning("APK install failed for %s: %s", pkg, exc)
                         ok = False
 
-            # 2. Push data files back
+            # 2. Push data files back — parallel via push_with_progress
             data_dir = pkg_dir / "data"
             if data_dir.exists():
+                files_to_push = []
                 for local_file in data_dir.rglob("*"):
                     if local_file.is_file():
                         rel = local_file.relative_to(data_dir)
                         remote = "/" + str(rel).replace("\\", "/")
-                        remote_parent = os.path.dirname(remote)
-                        try:
-                            self.adb.run_shell(f"mkdir -p '{remote_parent}'", serial)
-                            self.adb.push(str(local_file), remote, serial)
-                        except Exception as exc:
-                            log.debug("Push failed %s -> %s: %s", local_file, remote, exc)
+                        files_to_push.append((local_file, remote))
+                if files_to_push:
+                    self.push_with_progress(
+                        serial, files_to_push,
+                        phase="restoring_unsynced",
+                        sub_phase=pkg,
+                        pct_range=(
+                            safe_percent(idx, total),
+                            safe_percent(idx + 0.7, total),
+                        ),
+                    )
 
             # 3. ADB restore from .ab file
             ab_file = pkg_dir / f"{pkg}_data.ab"

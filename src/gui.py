@@ -809,8 +809,20 @@ class ADBToolkitApp(ctk.CTk):
     def _build_toolbox_tab(self):
         tab = self._tab_toolbox
 
-        scroll = ctk.CTkScrollableFrame(tab)
-        scroll.pack(fill="both", expand=True, padx=4, pady=4)
+        # ── Two-column layout: controls (left) | output (right) ──
+        container = ctk.CTkFrame(tab, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=4, pady=4)
+        container.columnconfigure(0, weight=3)
+        container.columnconfigure(1, weight=2)
+        container.rowconfigure(0, weight=1)
+
+        # Left column — scrollable controls
+        scroll = ctk.CTkScrollableFrame(container)
+        scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        # Right column — output console
+        right_frame = ctk.CTkFrame(container)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
 
         # Header
         hdr = ctk.CTkFrame(scroll)
@@ -1079,21 +1091,19 @@ class ADBToolkitApp(ctk.CTk):
         )
         self.entry_tb_logcat_filter.pack(side="left", padx=4)
 
-        # ── Output console ──
-        out_frame = ctk.CTkFrame(scroll)
-        out_frame.pack(fill="both", expand=True, padx=4, pady=(8, 4))
+        # ── Output console (right column) ──
         ctk.CTkLabel(
-            out_frame, text="Saída",
+            right_frame, text="📋 Saída",
             font=ctk.CTkFont(size=14, weight="bold"),
         ).pack(anchor="w", padx=12, pady=(8, 4))
 
-        self.tb_output = ctk.CTkTextbox(out_frame, height=200, font=ctk.CTkFont(family="Consolas", size=11))
-        self.tb_output.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.tb_output = ctk.CTkTextbox(right_frame, font=ctk.CTkFont(family="Consolas", size=11))
+        self.tb_output.pack(fill="both", expand=True, padx=8, pady=(0, 4))
         self.tb_output.insert("end", "Selecione uma ferramenta acima para começar.\n")
         self.tb_output.configure(state="disabled")
 
         # Progress bar
-        self.tb_progress = ctk.CTkProgressBar(scroll, height=6)
+        self.tb_progress = ctk.CTkProgressBar(right_frame, height=6)
         self.tb_progress.pack(fill="x", padx=8, pady=(0, 8))
         self.tb_progress.set(0)
 

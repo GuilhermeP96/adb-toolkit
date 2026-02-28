@@ -23,6 +23,7 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Set, Tuple
@@ -199,17 +200,41 @@ class CleanupManager:
     def estimate(
         self, serial: str, modes: List[CleanupMode],
     ) -> Dict[CleanupMode, ModeEstimate]:
-        """Scan device and return estimated items for each mode."""
+        """Scan device and return estimated items for each mode.
+
+        Independent modes are scanned in parallel for faster results.
+        """
         self._cancel_flag.clear()
         results: Dict[CleanupMode, ModeEstimate] = {}
-        for mode in modes:
-            if self._cancel_flag.is_set():
-                break
-            try:
-                results[mode] = self._estimate_mode(serial, mode)
-            except Exception as exc:
-                log.exception("Estimate failed for %s: %s", mode, exc)
-                results[mode] = ModeEstimate(mode=mode, error=str(exc))
+
+        # Run independent scans concurrently (cap at 3 to avoid
+        # overwhelming the ADB daemon with too many shell sessions).
+        workers = min(len(modes), 3)
+        if workers <= 1:
+            # Single mode — run inline
+            for mode in modes:
+                if self._cancel_flag.is_set():
+                    break
+                try:
+                    results[mode] = self._estimate_mode(serial, mode)
+                except Exception as exc:
+                    log.exception("Estimate failed for %s: %s", mode, exc)
+                    results[mode] = ModeEstimate(mode=mode, error=str(exc))
+            return results
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            future_to_mode = {
+                pool.submit(self._estimate_mode, serial, mode): mode
+                for mode in modes
+                if not self._cancel_flag.is_set()
+            }
+            for fut in as_completed(future_to_mode):
+                mode = future_to_mode[fut]
+                try:
+                    results[mode] = fut.result()
+                except Exception as exc:
+                    log.exception("Estimate failed for %s: %s", mode, exc)
+                    results[mode] = ModeEstimate(mode=mode, error=str(exc))
         return results
 
     def _estimate_mode(self, serial: str, mode: CleanupMode) -> ModeEstimate:

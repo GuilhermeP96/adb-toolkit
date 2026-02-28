@@ -19,6 +19,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -646,65 +647,99 @@ class ToolboxManager:
         serial: str,
         progress_cb: Optional[Callable[[ToolboxProgress], None]] = None,
     ) -> int:
-        """Clear cache for all third-party apps. Returns count cleared."""
+        """Clear cache for all third-party apps (parallel)."""
         self.reset_cancel()
         packages = self.adb.list_packages(serial, third_party=True)
         total = len(packages)
-        cleared = 0
+        if total == 0:
+            return 0
 
-        for i, pkg in enumerate(packages):
+        workers = min(os.cpu_count() or 4, 6, total)
+        _lock = threading.Lock()
+        counters = {"cleared": 0, "done": 0}
+
+        def _clear_one(pkg: str) -> None:
             if self._cancel.is_set():
-                break
-            if progress_cb:
-                progress_cb(ToolboxProgress(
-                    phase="Limpando caches",
-                    detail=pkg,
-                    percent=(i / total * 100) if total else 0,
-                ))
+                return
             try:
                 self.adb.clear_app_cache(pkg, serial)
-                cleared += 1
+                with _lock:
+                    counters["cleared"] += 1
             except Exception as exc:
                 log.debug("Cache clear failed for %s: %s", pkg, exc)
+            with _lock:
+                counters["done"] += 1
+                if progress_cb:
+                    progress_cb(ToolboxProgress(
+                        phase="Limpando caches",
+                        detail=pkg,
+                        percent=(counters["done"] / total * 100) if total else 0,
+                    ))
+
+        log.info("Clearing cache for %d apps with %d workers", total, workers)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(_clear_one, pkg) for pkg in packages]
+            for f in as_completed(futs):
+                try:
+                    f.result()
+                except Exception:
+                    pass
 
         if progress_cb:
             progress_cb(ToolboxProgress(
                 phase="Limpeza concluída",
-                detail=f"{cleared}/{total} apps",
+                detail=f"{counters['cleared']}/{total} apps",
                 percent=100, done=True,
             ))
-        return cleared
+        return counters["cleared"]
 
     def bulk_force_stop(
         self,
         serial: str,
         progress_cb: Optional[Callable[[ToolboxProgress], None]] = None,
     ) -> int:
-        """Force-stop all third-party apps."""
+        """Force-stop all third-party apps (parallel)."""
         self.reset_cancel()
         packages = self.adb.list_packages(serial, third_party=True)
         total = len(packages)
-        stopped = 0
+        if total == 0:
+            return 0
 
-        for i, pkg in enumerate(packages):
+        workers = min(os.cpu_count() or 4, 6, total)
+        _lock = threading.Lock()
+        counters = {"stopped": 0, "done": 0}
+
+        def _stop_one(pkg: str) -> None:
             if self._cancel.is_set():
-                break
-            if progress_cb:
-                progress_cb(ToolboxProgress(
-                    phase="Encerrando apps",
-                    detail=pkg,
-                    percent=(i / total * 100) if total else 0,
-                ))
+                return
             try:
                 self.force_stop_app(serial, pkg)
-                stopped += 1
+                with _lock:
+                    counters["stopped"] += 1
             except Exception:
                 pass
+            with _lock:
+                counters["done"] += 1
+                if progress_cb:
+                    progress_cb(ToolboxProgress(
+                        phase="Encerrando apps",
+                        detail=pkg,
+                        percent=(counters["done"] / total * 100) if total else 0,
+                    ))
+
+        log.info("Force-stopping %d apps with %d workers", total, workers)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = [pool.submit(_stop_one, pkg) for pkg in packages]
+            for f in as_completed(futs):
+                try:
+                    f.result()
+                except Exception:
+                    pass
 
         if progress_cb:
             progress_cb(ToolboxProgress(
                 phase="Apps encerrados",
-                detail=f"{stopped}/{total}",
+                detail=f"{counters['stopped']}/{total}",
                 percent=100, done=True,
             ))
-        return stopped
+        return counters["stopped"]

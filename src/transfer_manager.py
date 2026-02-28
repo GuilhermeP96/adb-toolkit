@@ -73,7 +73,7 @@ class TransferManager(ADBManagerBase):
         self.work_dir = work_dir or (adb.base_dir / "transfers")
         self.work_dir.mkdir(parents=True, exist_ok=True)
         self._transfer_progress = TransferProgress()
-        self.accelerator = TransferAccelerator()
+        self._accelerator = TransferAccelerator()
         # Child managers created during operations; tracked for cancel cascade
         self._child_backup_mgr: Optional[BackupManager] = None
         self._child_restore_mgr: Optional[RestoreManager] = None

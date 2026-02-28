@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -336,40 +337,77 @@ class BackupManager(ADBManagerBase):
         self._emit(BackupProgress(phase="apps", items_total=total))
 
         backed_up = []
+
+        # --- Resolve APK paths first (sequential — lightweight shell calls) ---
+        pkg_apk_map: List[Tuple[str, List[str]]] = []
         for i, pkg in enumerate(packages):
             if self._cancel_flag.is_set():
                 break
-
             self._emit(BackupProgress(
                 phase="apps",
-                current_item=pkg,
+                current_item=f"Localizando {pkg}…",
                 items_done=i,
                 items_total=total,
-                percent=(i / total * 100) if total > 0 else 0,
+                percent=(i / total * 50) if total > 0 else 0,
             ))
-
             try:
-                all_paths = self.adb.get_apk_paths(pkg, serial)
-                if all_paths:
-                    if len(all_paths) > 1:
-                        # Split APK — store in per-package subfolder
-                        pkg_apk_dir = apk_dir / pkg
-                        pkg_apk_dir.mkdir(exist_ok=True)
-                        pulled = 0
-                        for apk_remote in all_paths:
-                            apk_name = os.path.basename(apk_remote)
-                            local_apk = pkg_apk_dir / apk_name
-                            if self.adb.pull(apk_remote, str(local_apk), serial):
-                                pulled += 1
-                        if pulled > 0:
-                            backed_up.append(pkg)
-                    else:
-                        # Single APK
-                        local_apk = apk_dir / f"{pkg}.apk"
-                        if self.adb.pull(all_paths[0], str(local_apk), serial):
-                            backed_up.append(pkg)
+                apk_paths = self.adb.get_apk_paths(pkg, serial)
+                if apk_paths:
+                    pkg_apk_map.append((pkg, apk_paths))
+            except Exception as exc:
+                log.warning("Failed to locate %s: %s", pkg, exc)
+
+        # --- Pull APKs in parallel via ThreadPoolExecutor ---
+        _lock = threading.Lock()
+        apk_total = len(pkg_apk_map)
+        workers = self.accelerator.optimal_workers(apk_total)
+        done_count = 0
+
+        def _pull_apks(pkg: str, all_paths: List[str]) -> bool:
+            nonlocal done_count
+            if self._cancel_flag.is_set():
+                return False
+            ok = False
+            try:
+                if len(all_paths) > 1:
+                    pkg_apk_dir = apk_dir / pkg
+                    pkg_apk_dir.mkdir(exist_ok=True)
+                    pulled = 0
+                    for apk_remote in all_paths:
+                        apk_name = os.path.basename(apk_remote)
+                        local_apk = pkg_apk_dir / apk_name
+                        if self.adb.pull(apk_remote, str(local_apk), serial):
+                            pulled += 1
+                    ok = pulled > 0
+                else:
+                    local_apk = apk_dir / f"{pkg}.apk"
+                    ok = bool(self.adb.pull(all_paths[0], str(local_apk), serial))
             except Exception as exc:
                 log.warning("Failed to backup %s: %s", pkg, exc)
+            with _lock:
+                done_count += 1
+                self._emit(BackupProgress(
+                    phase="apps",
+                    current_item=pkg,
+                    items_done=done_count,
+                    items_total=apk_total,
+                    percent=50 + (done_count / apk_total * 50) if apk_total else 100,
+                ))
+            return ok
+
+        log.info("Pulling %d APK packages with %d workers", apk_total, workers)
+        with ThreadPoolExecutor(max_workers=max(workers, 1)) as pool:
+            futs = {
+                pool.submit(_pull_apks, pkg, paths): pkg
+                for pkg, paths in pkg_apk_map
+            }
+            for fut in as_completed(futs):
+                pkg = futs[fut]
+                try:
+                    if fut.result():
+                        backed_up.append(pkg)
+                except Exception:
+                    pass
 
         # Optionally backup app data
         if include_data and backed_up:
@@ -778,25 +816,25 @@ class BackupManager(ADBManagerBase):
             app_folder = folder / "messaging" / app_key
             app_folder.mkdir(parents=True, exist_ok=True)
 
-            # 1. Backup media paths (accessible without root)
+            # 1. Backup media paths (accessible without root) — parallel
             if existing_paths:
                 media_files = self.list_remote_files(
                     serial, existing_paths,
                     ignore_cache=True,
                     timeout=300,
                 )
-                for fpath, fsize in media_files:
-                    if self._is_cancelled():
-                        break
-                    rel = fpath.lstrip("/")
-                    local_path = app_folder / "media" / rel
-                    local_path.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        self.adb.pull(fpath, str(local_path), serial)
-                        total_files += 1
-                        total_bytes += fsize
-                    except Exception as exc:
-                        log.warning("Error pulling %s: %s", fpath, exc)
+                if media_files:
+                    pct_end = int((idx + 0.7) / total_apps * 90)
+                    count, bytes_pulled = self.pull_with_progress(
+                        serial, media_files,
+                        app_folder / "media",
+                        phase="messaging",
+                        sub_phase=f"{icon} {app_name}",
+                        strip_prefix="/",
+                        pct_range=(pct_base, pct_end),
+                    )
+                    total_files += count
+                    total_bytes += bytes_pulled
 
             # 2. Backup APK if requested
             if include_apk:
@@ -951,18 +989,18 @@ class BackupManager(ADBManagerBase):
                 data_files = self.list_remote_files(
                     serial, data_dirs, ignore_cache=True,
                 )
-                for fpath, fsize in data_files:
-                    if self._is_cancelled():
-                        break
-                    rel = fpath.lstrip("/")
-                    local_path = pkg_folder / "data" / rel
-                    local_path.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        self.adb.pull(fpath, str(local_path), serial)
-                        pkg_files += 1
-                        total_bytes += fsize
-                    except Exception:
-                        pass
+                if data_files:
+                    pct_end = int((idx + 0.7) / total_pkgs * 90)
+                    count, bytes_pulled = self.pull_with_progress(
+                        serial, data_files,
+                        pkg_folder / "data",
+                        phase="unsynced_apps",
+                        sub_phase=pkg,
+                        strip_prefix="/",
+                        pct_range=(pct_base, pct_end),
+                    )
+                    pkg_files += count
+                    total_bytes += bytes_pulled
 
             # 3. ADB backup (app internal data — may require confirmation)
             try:
