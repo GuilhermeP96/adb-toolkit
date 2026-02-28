@@ -652,8 +652,50 @@ class TransferAccelerator:
 
     Toggle-friendly: call ``set_gpu_enabled`` / ``set_virt_enabled`` from
     the GUI to switch at runtime without restarting.
+
+    When *auto_threads* is ``True`` (the default) the constructor ignores
+    the explicit ``max_pull_workers`` / ``max_push_workers`` values and
+    computes optimal counts from the available CPU cores and RAM.
+    GPU multi-dispatch and virtualization are enabled automatically when the
+    hardware supports them.
     """
 
+    # --- static helper: dynamic thread calculation ---------------------------
+    @staticmethod
+    def compute_dynamic_workers() -> Tuple[int, int]:
+        """Return ``(pull_workers, push_workers)`` tuned to the host hardware.
+
+        Heuristic
+        ---------
+        * Pull (device → PC):  I/O-bound, benefits from more concurrency.
+          Use ``min(cpu_cores, 8)`` — USB bandwidth is the real bottleneck so
+          going above 8 rarely helps.
+        * Push (PC → device):  also I/O-bound but the device flash is slower,
+          so we use a slightly lower ceiling of ``min(cpu_cores, 6)``.
+        * On machines with very little RAM (< 4 GB) we clamp further.
+        """
+        cores = os.cpu_count() or 4
+        try:
+            import psutil  # type: ignore[import-untyped]
+            ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+        except Exception:
+            ram_gb = 8.0  # assume reasonable default
+
+        # base scaling
+        pull = min(cores, 8)
+        push = min(cores, 6)
+
+        # low-RAM clamp
+        if ram_gb < 4:
+            pull = min(pull, 4)
+            push = min(push, 3)
+
+        # ensure at least 2 workers when possible
+        pull = max(2, pull)
+        push = max(2, push)
+        return pull, push
+
+    # --- constructor ---------------------------------------------------------
     def __init__(
         self,
         max_pull_workers: int = 4,
@@ -661,11 +703,17 @@ class TransferAccelerator:
         verify_checksums: bool = True,
         checksum_algo: str = "md5",
         gpu_enabled: bool = True,
-        multi_gpu: bool = False,
-        virt_enabled: bool = False,
+        multi_gpu: bool = True,
+        virt_enabled: bool = True,
+        auto_threads: bool = True,
     ):
+        # Dynamic thread calculation overrides explicit values
+        if auto_threads:
+            max_pull_workers, max_push_workers = self.compute_dynamic_workers()
+
         self.max_pull_workers = max_pull_workers
         self.max_push_workers = max_push_workers
+        self.auto_threads = auto_threads
         self.verify_checksums = verify_checksums
         self.checksum_algo = checksum_algo
         self.gpu_enabled = gpu_enabled
@@ -673,6 +721,12 @@ class TransferAccelerator:
         self.virt_enabled = virt_enabled
         self._gpu_list: Optional[List[GPUDevice]] = None
         self._virt: Optional[VirtInfo] = None
+
+        log.info(
+            "TransferAccelerator: auto=%s  workers=%d/%d  gpu=%s  multi_gpu=%s  virt=%s",
+            auto_threads, self.max_pull_workers, self.max_push_workers,
+            gpu_enabled, multi_gpu, virt_enabled,
+        )
 
     # --- runtime toggles ---
     def set_gpu_enabled(self, on: bool):
@@ -711,13 +765,22 @@ class TransferAccelerator:
         return get_gpu_info()
 
     def optimal_workers(self, file_count: int, avg_size_bytes: int = 0) -> int:
+        """Return the ideal worker count for a batch of *file_count* files.
+
+        Considers CPU cores, file count, and average file size to avoid
+        over-subscribing either the CPU or the USB bus.
+        """
         if file_count <= 1:
             return 1
+        cores = os.cpu_count() or 4
+        # Large files → fewer threads (USB bandwidth-bound)
         if avg_size_bytes > 50 * 1024 * 1024:
-            return min(2, file_count)
-        if avg_size_bytes > 10 * 1024 * 1024:
-            return min(3, file_count)
-        return min(self.max_pull_workers, file_count)
+            cap = min(2, cores)
+        elif avg_size_bytes > 10 * 1024 * 1024:
+            cap = min(3, cores)
+        else:
+            cap = min(self.max_pull_workers, cores, 8)
+        return min(cap, file_count)
 
     def summary(self) -> str:
         """Human-readable multi-line summary."""
@@ -766,8 +829,11 @@ class TransferAccelerator:
             lines.append("  🔴 Virtualização: DESATIVADA")
 
         # Workers
+        cores = os.cpu_count() or "?"
+        mode_label = "dinâmico" if self.auto_threads else "manual"
         lines.append(
             f"  Threads pull/push: {self.max_pull_workers}/{self.max_push_workers}"
+            f"  ({mode_label}, {cores} cores)"
         )
         lines.append(
             f"  Verificação: {'Ativada' if self.verify_checksums else 'Desativada'}"

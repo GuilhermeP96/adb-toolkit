@@ -53,14 +53,15 @@ DEFAULT_CONFIG = {
     },
     "acceleration": {
         "gpu_enabled": True,
-        "multi_gpu": False,
+        "multi_gpu": True,
         "verify_checksums": True,
         "checksum_algo": "md5",
-        "max_pull_workers": 4,
-        "max_push_workers": 4,
+        "max_pull_workers": 0,
+        "max_push_workers": 0,
+        "auto_threads": True,
     },
     "virtualization": {
-        "enabled": False,
+        "enabled": True,
         "prefer_hyperv": False,
     },
 }

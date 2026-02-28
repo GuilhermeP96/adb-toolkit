@@ -26,6 +26,7 @@ from .cleanup_manager import (
     CleanupManager, CleanupMode, ModeEstimate, ModeProgress, ModeResult,
     MODE_LABELS, MODE_DESCRIPTIONS, MODE_ORDER,
 )
+from .toolbox_manager import ToolboxManager, ToolboxProgress
 from .driver_manager import DriverManager, DriverStatus
 from .device_explorer import (
     DeviceTreeBrowser, MessagingAppDetector, AndroidPathResolver, MESSAGING_APPS,
@@ -80,6 +81,7 @@ class ADBToolkitApp(ctk.CTk):
         self.restore_mgr = RestoreManager(adb)
         self.transfer_mgr = TransferManager(adb)
         self.cleanup_mgr = CleanupManager(adb)
+        self.toolbox_mgr = ToolboxManager(adb)
         self.driver_mgr = DriverManager(adb.base_dir)
 
         # Cross-platform device manager
@@ -129,6 +131,7 @@ class ADBToolkitApp(ctk.CTk):
 
         self._tab_devices = self.tabview.add("📱 Dispositivos")
         self._tab_cleanup = self.tabview.add("🧹 Limpeza")
+        self._tab_toolbox = self.tabview.add("🧰 ToolBox")
         self._tab_backup = self.tabview.add("💾 Backup")
         self._tab_restore = self.tabview.add("♻️ Restaurar")
         self._tab_transfer = self.tabview.add("🔄 Transferir")
@@ -137,6 +140,7 @@ class ADBToolkitApp(ctk.CTk):
 
         self._build_devices_tab()
         self._build_cleanup_tab()
+        self._build_toolbox_tab()
         self._build_backup_tab()
         self._build_restore_tab()
         self._build_transfer_tab()
@@ -236,7 +240,7 @@ class ADBToolkitApp(ctk.CTk):
         self.lbl_virt_status.pack(side="right", padx=(4, 2))
 
         self._virt_toggle_var = ctk.BooleanVar(
-            value=self.config.get("virtualization.enabled", False),
+            value=self.config.get("virtualization.enabled", True),
         )
         self.sw_virt = ctk.CTkSwitch(
             frame, text="", width=36,
@@ -250,13 +254,27 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=self._init_accel_footer, daemon=True).start()
 
     def _init_accel_footer(self):
-        """Background detection of GPU + virtualization for footer labels."""
+        """Background detection of GPU + virtualization for footer labels.
+
+        Auto-enables GPU acceleration and virtualization when the
+        corresponding hardware is detected, matching the new 'always on
+        when available' policy.
+        """
         try:
             accel = self.transfer_mgr.accelerator
-            gpu_enabled = self._gpu_toggle_var.get()
-            accel.set_gpu_enabled(gpu_enabled)
 
+            # --- GPU auto-enable ---
             gpus = accel.usable_gpus
+            if gpus:
+                # Hardware present → force ON
+                self._safe_after(0, lambda: self._gpu_toggle_var.set(True))
+                accel.set_gpu_enabled(True)
+                self.config.set("acceleration.gpu_enabled", True)
+                if len(gpus) > 1:
+                    accel.set_multi_gpu(True)
+                    self.config.set("acceleration.multi_gpu", True)
+
+            gpu_enabled = self._gpu_toggle_var.get()
             if gpus and gpu_enabled:
                 best = gpus[0]
                 gpu_txt = f"⚡GPU: {best.name}"
@@ -279,8 +297,14 @@ class ADBToolkitApp(ctk.CTk):
             ))
 
             virt = accel.virt
+            # --- Virt auto-enable ---
+            has_virt = virt.vtx_enabled or virt.hyperv_running or virt.wsl_available
+            if has_virt:
+                self._safe_after(0, lambda: self._virt_toggle_var.set(True))
+                accel.set_virt_enabled(True)
+                self.config.set("virtualization.enabled", True)
+
             virt_enabled = self._virt_toggle_var.get()
-            accel.set_virt_enabled(virt_enabled)
             parts = []
             if virt.vtx_enabled:
                 parts.append("VT-x")
@@ -766,6 +790,766 @@ class ADBToolkitApp(ctk.CTk):
     def _cancel_cleanup(self):
         self.cleanup_mgr.cancel()
         self._set_status("Limpeza cancelada")
+
+        self.cleanup_mgr.cancel()
+        self._set_status("Limpeza cancelada")
+
+    # ==================================================================
+    # TOOLBOX TAB
+    # ==================================================================
+    def _build_toolbox_tab(self):
+        tab = self._tab_toolbox
+
+        scroll = ctk.CTkScrollableFrame(tab)
+        scroll.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # Header
+        hdr = ctk.CTkFrame(scroll)
+        hdr.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            hdr, text="🧰 ToolBox — Gestão do Dispositivo",
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 2))
+        ctk.CTkLabel(
+            hdr,
+            text="Ferramentas de diagnóstico, otimização e gerenciamento via ADB.",
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        # ── Device Info section ──
+        self._tb_section(scroll, "📋 Informações do Dispositivo")
+
+        info_btns = ctk.CTkFrame(scroll, fg_color="transparent")
+        info_btns.pack(fill="x", padx=16, pady=4)
+
+        self.btn_tb_device_info = ctk.CTkButton(
+            info_btns, text="📱 Info Geral",
+            command=self._tb_device_info, width=150,
+        )
+        self.btn_tb_device_info.pack(side="left", padx=4)
+
+        self.btn_tb_battery = ctk.CTkButton(
+            info_btns, text="🔋 Bateria",
+            command=self._tb_battery_info, width=150,
+        )
+        self.btn_tb_battery.pack(side="left", padx=4)
+
+        self.btn_tb_storage = ctk.CTkButton(
+            info_btns, text="💾 Armazenamento",
+            command=self._tb_storage_info, width=150,
+        )
+        self.btn_tb_storage.pack(side="left", padx=4)
+
+        self.btn_tb_network = ctk.CTkButton(
+            info_btns, text="🌐 Rede",
+            command=self._tb_network_info, width=150,
+        )
+        self.btn_tb_network.pack(side="left", padx=4)
+
+        # ── App Management section ──
+        self._tb_section(scroll, "📦 Gerenciamento de Apps")
+
+        app_row1 = ctk.CTkFrame(scroll, fg_color="transparent")
+        app_row1.pack(fill="x", padx=16, pady=4)
+
+        self.btn_tb_list_apps = ctk.CTkButton(
+            app_row1, text="📋 Listar Apps",
+            command=self._tb_list_apps, width=150,
+        )
+        self.btn_tb_list_apps.pack(side="left", padx=4)
+
+        self.btn_tb_clear_all_cache = ctk.CTkButton(
+            app_row1, text="🧹 Limpar Todo Cache",
+            command=self._tb_clear_all_cache, width=160,
+        )
+        self.btn_tb_clear_all_cache.pack(side="left", padx=4)
+
+        self.btn_tb_force_stop_all = ctk.CTkButton(
+            app_row1, text="⏹ Encerrar Tudo",
+            command=self._tb_force_stop_all, width=150,
+        )
+        self.btn_tb_force_stop_all.pack(side="left", padx=4)
+
+        # Single-app operations
+        app_single = ctk.CTkFrame(scroll, fg_color="transparent")
+        app_single.pack(fill="x", padx=16, pady=4)
+        ctk.CTkLabel(app_single, text="Pacote:").pack(side="left")
+        self.entry_tb_package = ctk.CTkEntry(app_single, width=300, placeholder_text="com.example.app")
+        self.entry_tb_package.pack(side="left", padx=4)
+
+        self.btn_tb_uninstall = ctk.CTkButton(
+            app_single, text="🗑️ Desinstalar", width=120,
+            fg_color=COLORS["error"], hover_color="#c0392b",
+            command=self._tb_uninstall_app,
+        )
+        self.btn_tb_uninstall.pack(side="left", padx=4)
+
+        self.btn_tb_force_stop = ctk.CTkButton(
+            app_single, text="⏹ Encerrar", width=100,
+            command=self._tb_force_stop_app,
+        )
+        self.btn_tb_force_stop.pack(side="left", padx=4)
+
+        self.btn_tb_clear_data = ctk.CTkButton(
+            app_single, text="🔄 Limpar Dados", width=120,
+            fg_color=COLORS["warning"], hover_color="#e5a100",
+            command=self._tb_clear_data,
+        )
+        self.btn_tb_clear_data.pack(side="left", padx=4)
+
+        # ── Performance section ──
+        self._tb_section(scroll, "⚡ Performance e Otimização")
+
+        perf_btns = ctk.CTkFrame(scroll, fg_color="transparent")
+        perf_btns.pack(fill="x", padx=16, pady=4)
+
+        self.btn_tb_kill_bg = ctk.CTkButton(
+            perf_btns, text="💀 Encerrar Background",
+            command=self._tb_kill_background, width=180,
+        )
+        self.btn_tb_kill_bg.pack(side="left", padx=4)
+
+        self.btn_tb_fstrim = ctk.CTkButton(
+            perf_btns, text="🔧 FSTRIM",
+            command=self._tb_fstrim, width=120,
+        )
+        self.btn_tb_fstrim.pack(side="left", padx=4)
+
+        self.btn_tb_reset_battery = ctk.CTkButton(
+            perf_btns, text="🔋 Reset Stats Bateria",
+            command=self._tb_reset_battery, width=160,
+        )
+        self.btn_tb_reset_battery.pack(side="left", padx=4)
+
+        perf_btns2 = ctk.CTkFrame(scroll, fg_color="transparent")
+        perf_btns2.pack(fill="x", padx=16, pady=4)
+
+        # Animation scale
+        ctk.CTkLabel(perf_btns2, text="Animações:").pack(side="left")
+        self.tb_anim_var = ctk.StringVar(value="1.0")
+        ctk.CTkOptionMenu(
+            perf_btns2, values=["0", "0.25", "0.5", "1.0"],
+            variable=self.tb_anim_var, width=80,
+        ).pack(side="left", padx=4)
+        self.btn_tb_set_anim = ctk.CTkButton(
+            perf_btns2, text="Aplicar", width=80,
+            command=self._tb_set_animation,
+        )
+        self.btn_tb_set_anim.pack(side="left", padx=4)
+
+        # ── Screen Capture section ──
+        self._tb_section(scroll, "📸 Captura de Tela")
+
+        cap_btns = ctk.CTkFrame(scroll, fg_color="transparent")
+        cap_btns.pack(fill="x", padx=16, pady=4)
+
+        self.btn_tb_screenshot = ctk.CTkButton(
+            cap_btns, text="📷 Screenshot",
+            command=self._tb_screenshot, width=150,
+        )
+        self.btn_tb_screenshot.pack(side="left", padx=4)
+
+        self.btn_tb_screenrecord = ctk.CTkButton(
+            cap_btns, text="🎬 Gravar Tela (30s)",
+            command=self._tb_screenrecord, width=180,
+        )
+        self.btn_tb_screenrecord.pack(side="left", padx=4)
+
+        self.btn_tb_open_output = ctk.CTkButton(
+            cap_btns, text="📂 Abrir Pasta", width=120,
+            command=lambda: open_folder(str(self.toolbox_mgr.output_dir)),
+        )
+        self.btn_tb_open_output.pack(side="left", padx=4)
+
+        # ── WiFi ADB section ──
+        self._tb_section(scroll, "📶 WiFi ADB")
+
+        wifi_btns = ctk.CTkFrame(scroll, fg_color="transparent")
+        wifi_btns.pack(fill="x", padx=16, pady=4)
+
+        self.btn_tb_wifi_on = ctk.CTkButton(
+            wifi_btns, text="📶 Ativar WiFi ADB",
+            command=self._tb_enable_wifi_adb, width=160,
+            fg_color=COLORS["success"], hover_color="#05c090",
+        )
+        self.btn_tb_wifi_on.pack(side="left", padx=4)
+
+        self.btn_tb_wifi_off = ctk.CTkButton(
+            wifi_btns, text="🔌 Voltar para USB",
+            command=self._tb_disable_wifi_adb, width=160,
+        )
+        self.btn_tb_wifi_off.pack(side="left", padx=4)
+
+        self.lbl_tb_wifi_status = ctk.CTkLabel(
+            wifi_btns, text="", font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+        )
+        self.lbl_tb_wifi_status.pack(side="left", padx=8)
+
+        # ── Developer Tools section ──
+        self._tb_section(scroll, "🛠️ Ferramentas de Desenvolvedor")
+
+        dev_btns = ctk.CTkFrame(scroll, fg_color="transparent")
+        dev_btns.pack(fill="x", padx=16, pady=4)
+
+        self.tb_stay_awake_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            dev_btns, text="Tela sempre ligada (carregando)",
+            variable=self.tb_stay_awake_var,
+            command=self._tb_toggle_stay_awake,
+        ).pack(side="left", padx=4)
+
+        self.tb_show_touches_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            dev_btns, text="Mostrar toques",
+            variable=self.tb_show_touches_var,
+            command=self._tb_toggle_show_touches,
+        ).pack(side="left", padx=16)
+
+        # ── Reboot section ──
+        self._tb_section(scroll, "🔄 Reiniciar Dispositivo")
+
+        reboot_btns = ctk.CTkFrame(scroll, fg_color="transparent")
+        reboot_btns.pack(fill="x", padx=16, pady=4)
+
+        self.btn_tb_reboot = ctk.CTkButton(
+            reboot_btns, text="🔄 Normal",
+            command=self._tb_reboot_normal, width=120,
+        )
+        self.btn_tb_reboot.pack(side="left", padx=4)
+
+        self.btn_tb_reboot_recovery = ctk.CTkButton(
+            reboot_btns, text="🔧 Recovery",
+            command=self._tb_reboot_recovery, width=120,
+            fg_color=COLORS["warning"], hover_color="#e5a100",
+        )
+        self.btn_tb_reboot_recovery.pack(side="left", padx=4)
+
+        self.btn_tb_reboot_bootloader = ctk.CTkButton(
+            reboot_btns, text="⚙️ Bootloader",
+            command=self._tb_reboot_bootloader, width=120,
+            fg_color=COLORS["warning"], hover_color="#e5a100",
+        )
+        self.btn_tb_reboot_bootloader.pack(side="left", padx=4)
+
+        self.btn_tb_reboot_fastboot = ctk.CTkButton(
+            reboot_btns, text="⚡ Fastboot",
+            command=self._tb_reboot_fastboot, width=120,
+            fg_color=COLORS["warning"], hover_color="#e5a100",
+        )
+        self.btn_tb_reboot_fastboot.pack(side="left", padx=4)
+
+        self.btn_tb_shutdown = ctk.CTkButton(
+            reboot_btns, text="⏻ Desligar",
+            command=self._tb_shutdown, width=120,
+            fg_color=COLORS["error"], hover_color="#c0392b",
+        )
+        self.btn_tb_shutdown.pack(side="left", padx=4)
+
+        # ── Logcat section ──
+        self._tb_section(scroll, "📜 Logcat")
+
+        log_btns = ctk.CTkFrame(scroll, fg_color="transparent")
+        log_btns.pack(fill="x", padx=16, pady=4)
+
+        self.btn_tb_logcat = ctk.CTkButton(
+            log_btns, text="📜 Capturar Logcat",
+            command=self._tb_capture_logcat, width=160,
+        )
+        self.btn_tb_logcat.pack(side="left", padx=4)
+
+        self.btn_tb_clear_logcat = ctk.CTkButton(
+            log_btns, text="🗑️ Limpar Buffer",
+            command=self._tb_clear_logcat, width=140,
+        )
+        self.btn_tb_clear_logcat.pack(side="left", padx=4)
+
+        ctk.CTkLabel(log_btns, text="Filtro:").pack(side="left", padx=(8, 2))
+        self.entry_tb_logcat_filter = ctk.CTkEntry(
+            log_btns, width=200, placeholder_text="Tag (ex: ActivityManager)",
+        )
+        self.entry_tb_logcat_filter.pack(side="left", padx=4)
+
+        # ── Output console ──
+        out_frame = ctk.CTkFrame(scroll)
+        out_frame.pack(fill="both", expand=True, padx=4, pady=(8, 4))
+        ctk.CTkLabel(
+            out_frame, text="Saída",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 4))
+
+        self.tb_output = ctk.CTkTextbox(out_frame, height=200, font=ctk.CTkFont(family="Consolas", size=11))
+        self.tb_output.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.tb_output.insert("end", "Selecione uma ferramenta acima para começar.\n")
+        self.tb_output.configure(state="disabled")
+
+        # Progress bar
+        self.tb_progress = ctk.CTkProgressBar(scroll, height=6)
+        self.tb_progress.pack(fill="x", padx=8, pady=(0, 8))
+        self.tb_progress.set(0)
+
+    # -- helpers -----------------------------------------------------------
+    def _tb_section(self, parent, title: str):
+        """Render a section header inside the ToolBox tab."""
+        f = ctk.CTkFrame(parent, fg_color="transparent")
+        f.pack(fill="x", padx=8, pady=(12, 2))
+        ctk.CTkLabel(
+            f, text=title, font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=4)
+
+    def _tb_write(self, text: str, clear: bool = False):
+        """Append text to the ToolBox output console (thread-safe)."""
+        def _do():
+            self.tb_output.configure(state="normal")
+            if clear:
+                self.tb_output.delete("1.0", "end")
+            self.tb_output.insert("end", text + "\n")
+            self.tb_output.see("end")
+            self.tb_output.configure(state="disabled")
+        self._safe_after(0, _do)
+
+    def _tb_serial(self) -> Optional[str]:
+        """Get selected device serial, with user warning."""
+        s = self._get_selected_device()
+        if not s:
+            return None
+        return s
+
+    # -- Device Info callbacks -----------------------------------------------
+    def _tb_device_info(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("Coletando informações do dispositivo…", clear=True)
+
+        def _run():
+            try:
+                info = self.toolbox_mgr.get_device_overview(serial)
+                lines = [
+                    "═══ Informações do Dispositivo ═══",
+                    f"  Modelo:       {info.manufacturer} {info.model}",
+                    f"  Marca:        {info.brand}",
+                    f"  Android:      {info.android_version}  (SDK {info.sdk_level})",
+                    f"  Build:        {info.build_number}",
+                    f"  Segurança:    {info.security_patch}",
+                    f"  Kernel:       {info.kernel}",
+                    f"  CPU:          {info.cpu_hardware or info.cpu_abi}  ({info.cpu_cores} cores)",
+                    f"  RAM:          {info.ram_total_mb} MB total, {info.ram_available_mb} MB livre",
+                    f"  Tela:         {info.display_resolution}  ({info.display_density} DPI)",
+                    f"  Serial:       {info.serial_number}",
+                    f"  Uptime:       {info.uptime}",
+                ]
+                self._tb_write("\n".join(lines), clear=True)
+            except Exception as exc:
+                self._tb_write(f"Erro: {exc}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_battery_info(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("Lendo informações da bateria…", clear=True)
+
+        def _run():
+            try:
+                b = self.toolbox_mgr.get_battery_info(serial)
+                lines = [
+                    "═══ Bateria ═══",
+                    f"  Nível:        {b.level}%",
+                    f"  Status:       {b.status}",
+                    f"  Saúde:        {b.health}",
+                    f"  Temperatura:  {b.temperature:.1f} °C",
+                    f"  Tensão:       {b.voltage:.2f} V",
+                    f"  Tecnologia:   {b.technology}",
+                    f"  Alimentação:  {b.plugged}",
+                ]
+                if b.current_now:
+                    current_ma = b.current_now / 1000
+                    lines.append(f"  Corrente:     {current_ma:.0f} mA")
+                if b.capacity:
+                    lines.append(f"  Capacidade:   {b.capacity} mAh")
+                self._tb_write("\n".join(lines), clear=True)
+            except Exception as exc:
+                self._tb_write(f"Erro: {exc}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_storage_info(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("Analisando armazenamento…", clear=True)
+
+        def _run():
+            try:
+                parts = self.toolbox_mgr.get_storage_info(serial)
+                lines = ["═══ Armazenamento ═══"]
+                lines.append(f"  {'Partição':<20} {'Total':>8} {'Usado':>8} {'Livre':>8} {'Uso':>6}")
+                lines.append("  " + "─" * 56)
+                for p in parts:
+                    lines.append(
+                        f"  {p.partition:<20} {p.total_mb:>6} MB {p.used_mb:>6} MB "
+                        f"{p.available_mb:>6} MB {p.use_percent:>5.1f}%"
+                    )
+                self._tb_write("\n".join(lines), clear=True)
+            except Exception as exc:
+                self._tb_write(f"Erro: {exc}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_network_info(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("Obtendo informações de rede…", clear=True)
+
+        def _run():
+            try:
+                net = self.toolbox_mgr.get_network_info(serial)
+                lines = [
+                    "═══ Rede ═══",
+                    f"  IP WiFi:      {net.get('ip_wifi', 'N/A')}",
+                    f"  SSID:         {net.get('ssid', 'N/A')}",
+                    f"  Dados Móveis: {net.get('mobile_type', 'N/A')}",
+                    f"  Bluetooth:    {net.get('bluetooth', 'N/A')}",
+                    f"  Modo Avião:   {net.get('airplane_mode', 'N/A')}",
+                ]
+                self._tb_write("\n".join(lines), clear=True)
+            except Exception as exc:
+                self._tb_write(f"Erro: {exc}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # -- App Management callbacks --------------------------------------------
+    def _tb_list_apps(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("Listando aplicativos instalados…", clear=True)
+
+        def _run():
+            try:
+                apps = self.toolbox_mgr.list_apps(serial)
+                lines = [f"═══ {len(apps)} Apps Instalados ═══"]
+                for a in apps:
+                    ver = f" v{a.version_name}" if a.version_name else ""
+                    lines.append(f"  {a.package}{ver}")
+                self._tb_write("\n".join(lines), clear=True)
+            except Exception as exc:
+                self._tb_write(f"Erro: {exc}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_clear_all_cache(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("Limpando cache de todos os apps…", clear=True)
+        self.tb_progress.set(0)
+
+        def _progress(p: ToolboxProgress):
+            self._safe_after(0, lambda: self.tb_progress.set(p.percent / 100))
+            if p.detail:
+                self._tb_write(f"  {p.detail}")
+
+        def _run():
+            try:
+                count = self.toolbox_mgr.clear_all_apps_cache(serial, _progress)
+                self._tb_write(f"\n✅ Cache limpo para {count} aplicativos.")
+                self._safe_after(0, lambda: self.tb_progress.set(1))
+            except Exception as exc:
+                self._tb_write(f"Erro: {exc}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_force_stop_all(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("Encerrando todos os apps de terceiros…", clear=True)
+        self.tb_progress.set(0)
+
+        def _progress(p: ToolboxProgress):
+            self._safe_after(0, lambda: self.tb_progress.set(p.percent / 100))
+
+        def _run():
+            try:
+                count = self.toolbox_mgr.bulk_force_stop(serial, _progress)
+                self._tb_write(f"✅ {count} aplicativos encerrados.", clear=True)
+                self._safe_after(0, lambda: self.tb_progress.set(1))
+            except Exception as exc:
+                self._tb_write(f"Erro: {exc}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_uninstall_app(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        pkg = self.entry_tb_package.get().strip()
+        if not pkg:
+            self._tb_write("⚠️ Digite o nome do pacote.", clear=True)
+            return
+        if not messagebox.askyesno("Desinstalar", f"Desinstalar {pkg}?"):
+            return
+
+        def _run():
+            ok, msg = self.toolbox_mgr.uninstall_app(serial, pkg)
+            icon = "✅" if ok else "❌"
+            self._tb_write(f"{icon} {pkg}: {msg}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_force_stop_app(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        pkg = self.entry_tb_package.get().strip()
+        if not pkg:
+            self._tb_write("⚠️ Digite o nome do pacote.", clear=True)
+            return
+
+        def _run():
+            self.toolbox_mgr.force_stop_app(serial, pkg)
+            self._tb_write(f"⏹ {pkg} encerrado.", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_clear_data(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        pkg = self.entry_tb_package.get().strip()
+        if not pkg:
+            self._tb_write("⚠️ Digite o nome do pacote.", clear=True)
+            return
+        if not messagebox.askyesno("Limpar Dados", f"Limpar TODOS os dados de {pkg}?\nIsso inclui cache, preferências e bancos de dados."):
+            return
+
+        def _run():
+            ok, msg = self.toolbox_mgr.clear_app_data(serial, pkg)
+            icon = "✅" if ok else "❌"
+            self._tb_write(f"{icon} {pkg}: {msg}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # -- Performance callbacks -----------------------------------------------
+    def _tb_kill_background(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+
+        def _run():
+            count = self.toolbox_mgr.kill_background_apps(serial)
+            procs = self.toolbox_mgr.get_running_processes_count(serial)
+            self._tb_write(
+                f"💀 Processos em background encerrados.\n"
+                f"   Processos ativos restantes: {procs}",
+                clear=True,
+            )
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_fstrim(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("Executando FSTRIM…", clear=True)
+
+        def _run():
+            result = self.toolbox_mgr.run_fstrim(serial)
+            self._tb_write(f"🔧 FSTRIM:\n{result}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_reset_battery(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+
+        def _run():
+            ok = self.toolbox_mgr.reset_battery_stats(serial)
+            icon = "✅" if ok else "❌"
+            self._tb_write(f"{icon} Estatísticas de bateria resetadas.", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_set_animation(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        try:
+            scale = float(self.tb_anim_var.get())
+        except ValueError:
+            scale = 1.0
+
+        def _run():
+            self.toolbox_mgr.set_animation_scale(serial, scale)
+            label = "desativadas" if scale == 0 else f"escala {scale}x"
+            self._tb_write(f"⚡ Animações: {label}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # -- Screen Capture callbacks --------------------------------------------
+    def _tb_screenshot(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("📷 Capturando screenshot…", clear=True)
+
+        def _run():
+            ok, path = self.toolbox_mgr.take_screenshot(serial)
+            if ok:
+                self._tb_write(f"✅ Screenshot salvo: {path}")
+            else:
+                self._tb_write("❌ Falha ao capturar screenshot.")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_screenrecord(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("🎬 Gravando tela por 30 segundos…", clear=True)
+
+        def _run():
+            ok, path = self.toolbox_mgr.start_screenrecord(serial, duration=30)
+            if ok:
+                self._tb_write(f"✅ Gravação salva: {path}")
+            else:
+                self._tb_write("❌ Falha ao gravar tela.")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # -- WiFi ADB callbacks --------------------------------------------------
+    def _tb_enable_wifi_adb(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        self._tb_write("📶 Ativando WiFi ADB…", clear=True)
+
+        def _run():
+            ok, addr = self.toolbox_mgr.enable_wifi_adb(serial)
+            if ok:
+                self._tb_write(f"✅ WiFi ADB ativo em {addr}")
+                self._safe_after(0, lambda: self.lbl_tb_wifi_status.configure(
+                    text=f"Conectado: {addr}", text_color=COLORS["success"],
+                ))
+            else:
+                self._tb_write(f"❌ {addr}")
+                self._safe_after(0, lambda: self.lbl_tb_wifi_status.configure(
+                    text="Falha", text_color=COLORS["error"],
+                ))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_disable_wifi_adb(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+
+        def _run():
+            ok = self.toolbox_mgr.disable_wifi_adb(serial)
+            icon = "✅" if ok else "❌"
+            self._tb_write(f"{icon} Modo USB restaurado.", clear=True)
+            self._safe_after(0, lambda: self.lbl_tb_wifi_status.configure(text=""))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # -- Developer tools callbacks -------------------------------------------
+    def _tb_toggle_stay_awake(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        on = self.tb_stay_awake_var.get()
+
+        def _run():
+            self.toolbox_mgr.toggle_stay_awake(serial, on)
+            state = "ativada" if on else "desativada"
+            self._tb_write(f"🖥️ Tela sempre ligada: {state}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_toggle_show_touches(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        on = self.tb_show_touches_var.get()
+
+        def _run():
+            self.toolbox_mgr.toggle_show_touches(serial, on)
+            state = "ativado" if on else "desativado"
+            self._tb_write(f"👆 Mostrar toques: {state}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # -- Reboot callbacks ----------------------------------------------------
+    def _tb_reboot_normal(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        if messagebox.askyesno("Reiniciar", "Reiniciar o dispositivo?"):
+            self.toolbox_mgr.reboot_normal(serial)
+            self._tb_write("🔄 Dispositivo reiniciando…", clear=True)
+
+    def _tb_reboot_recovery(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        if messagebox.askyesno("Recovery", "Reiniciar em modo Recovery?"):
+            self.toolbox_mgr.reboot_recovery(serial)
+            self._tb_write("🔧 Reiniciando em Recovery…", clear=True)
+
+    def _tb_reboot_bootloader(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        if messagebox.askyesno("Bootloader", "Reiniciar em modo Bootloader?"):
+            self.toolbox_mgr.reboot_bootloader(serial)
+            self._tb_write("⚙️ Reiniciando em Bootloader…", clear=True)
+
+    def _tb_reboot_fastboot(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        if messagebox.askyesno("Fastboot", "Reiniciar em modo Fastboot?"):
+            self.toolbox_mgr.reboot_fastboot(serial)
+            self._tb_write("⚡ Reiniciando em Fastboot…", clear=True)
+
+    def _tb_shutdown(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        if messagebox.askyesno("Desligar", "Desligar o dispositivo?"):
+            self.toolbox_mgr.shutdown(serial)
+            self._tb_write("⏻ Dispositivo desligando…", clear=True)
+
+    # -- Logcat callbacks ----------------------------------------------------
+    def _tb_capture_logcat(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+        tag = self.entry_tb_logcat_filter.get().strip()
+        self._tb_write("📜 Capturando logcat…", clear=True)
+
+        def _run():
+            text, path = self.toolbox_mgr.capture_logcat(serial, lines=500, filter_tag=tag)
+            self._tb_write(f"═══ Logcat (salvo em {path}) ═══\n{text}", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _tb_clear_logcat(self):
+        serial = self._tb_serial()
+        if not serial:
+            return
+
+        def _run():
+            ok = self.toolbox_mgr.clear_logcat(serial)
+            icon = "✅" if ok else "❌"
+            self._tb_write(f"{icon} Buffer logcat limpo.", clear=True)
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # ==================================================================
     # BACKUP TAB
@@ -1776,7 +2560,7 @@ class ADBToolkitApp(ctk.CTk):
 
         # Multi-GPU
         self.settings_multigpu_var = ctk.BooleanVar(
-            value=self.config.get("acceleration.multi_gpu", False),
+            value=self.config.get("acceleration.multi_gpu", True),
         )
         ctk.CTkCheckBox(
             frame, text="Distribuir carga entre múltiplas GPUs (se disponíveis)",
@@ -1804,21 +2588,46 @@ class ADBToolkitApp(ctk.CTk):
             variable=self.settings_algo_var, width=100,
         ).pack(side="left", padx=8)
 
-        # Workers
+        # Workers — auto-detect toggle + manual override
+        auto_thr_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        auto_thr_frame.pack(fill="x", padx=12, pady=4)
+        self.settings_auto_threads_var = ctk.BooleanVar(
+            value=self.config.get("acceleration.auto_threads", True),
+        )
+        ctk.CTkCheckBox(
+            auto_thr_frame,
+            text="Threads automáticas (baseado no hardware)",
+            variable=self.settings_auto_threads_var,
+            command=self._toggle_auto_threads,
+        ).pack(side="left")
+
+        # Dynamic info label
+        dyn_pull, dyn_push = TransferAccelerator.compute_dynamic_workers()
+        cores = os.cpu_count() or "?"
+        self.lbl_auto_threads = ctk.CTkLabel(
+            auto_thr_frame,
+            text=f"  ({cores} cores → pull {dyn_pull} / push {dyn_push})",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["success"],
+        )
+        self.lbl_auto_threads.pack(side="left", padx=8)
+
         workers_frame = ctk.CTkFrame(frame, fg_color="transparent")
         workers_frame.pack(fill="x", padx=12, pady=4)
         ctk.CTkLabel(workers_frame, text="Threads pull/push:").pack(side="left")
         self.settings_pull_w = ctk.CTkEntry(workers_frame, width=50)
         self.settings_pull_w.pack(side="left", padx=4)
         self.settings_pull_w.insert(
-            0, str(self.config.get("acceleration.max_pull_workers", 4)),
+            0, str(self.config.get("acceleration.max_pull_workers", 0) or dyn_pull),
         )
         ctk.CTkLabel(workers_frame, text="/").pack(side="left")
         self.settings_push_w = ctk.CTkEntry(workers_frame, width=50)
         self.settings_push_w.pack(side="left", padx=4)
         self.settings_push_w.insert(
-            0, str(self.config.get("acceleration.max_push_workers", 4)),
+            0, str(self.config.get("acceleration.max_push_workers", 0) or dyn_push),
         )
+        # Apply initial auto-threads state
+        self._toggle_auto_threads()
 
         # ────── Virtualization section ──────
         virt_header = ctk.CTkFrame(frame, fg_color="transparent")
@@ -1830,7 +2639,7 @@ class ADBToolkitApp(ctk.CTk):
         ).pack(anchor="w")
 
         self.settings_virt_var = ctk.BooleanVar(
-            value=self.config.get("virtualization.enabled", False),
+            value=self.config.get("virtualization.enabled", True),
         )
         ctk.CTkCheckBox(
             frame, text="Habilitar virtualização (Hyper-V / VT-x / WSL2)",
@@ -2575,6 +3384,15 @@ class ADBToolkitApp(ctk.CTk):
             btns.append(self.btn_scan_cleanup)
         if hasattr(self, "btn_execute_cleanup"):
             btns.append(self.btn_execute_cleanup)
+        # Toolbox buttons
+        for attr in (
+            "btn_tb_device_info", "btn_tb_battery", "btn_tb_storage",
+            "btn_tb_network", "btn_tb_list_apps", "btn_tb_clear_all_cache",
+            "btn_tb_force_stop_all", "btn_tb_screenshot", "btn_tb_screenrecord",
+            "btn_tb_logcat",
+        ):
+            if hasattr(self, attr):
+                btns.append(getattr(self, attr))
         return btns
 
     # ==================================================================
@@ -3878,6 +4696,26 @@ class ADBToolkitApp(ctk.CTk):
         self._set_status("Pronto")
         threading.Thread(target=self._refresh_path_status, daemon=True).start()
 
+    def _toggle_auto_threads(self):
+        """Enable/disable the manual thread entry fields based on auto toggle."""
+        auto = self.settings_auto_threads_var.get()
+        state = "disabled" if auto else "normal"
+        self.settings_pull_w.configure(state=state)
+        self.settings_push_w.configure(state=state)
+        if auto:
+            dyn_pull, dyn_push = TransferAccelerator.compute_dynamic_workers()
+            self.settings_pull_w.configure(state="normal")
+            self.settings_pull_w.delete(0, "end")
+            self.settings_pull_w.insert(0, str(dyn_pull))
+            self.settings_pull_w.configure(state="disabled")
+            self.settings_push_w.configure(state="normal")
+            self.settings_push_w.delete(0, "end")
+            self.settings_push_w.insert(0, str(dyn_push))
+            self.settings_push_w.configure(state="disabled")
+            self.lbl_auto_threads.configure(text_color=COLORS["success"])
+        else:
+            self.lbl_auto_threads.configure(text_color=COLORS["text_dim"])
+
     def _save_settings(self):
         adb_path = self.entry_adb_path.get().strip()
         if adb_path:
@@ -3892,20 +4730,28 @@ class ADBToolkitApp(ctk.CTk):
 
         # Acceleration settings
         gpu_on = self.settings_gpu_var.get()
+        auto_thr = self.settings_auto_threads_var.get()
         self.config.set("acceleration.gpu_enabled", gpu_on)
         self.config.set("acceleration.multi_gpu", self.settings_multigpu_var.get())
         self.config.set("acceleration.verify_checksums", self.settings_verify_var.get())
         self.config.set("acceleration.checksum_algo", self.settings_algo_var.get())
-        try:
-            pw = int(self.settings_pull_w.get())
-            self.config.set("acceleration.max_pull_workers", max(1, min(pw, 16)))
-        except ValueError:
-            pass
-        try:
-            pushw = int(self.settings_push_w.get())
-            self.config.set("acceleration.max_push_workers", max(1, min(pushw, 16)))
-        except ValueError:
-            pass
+        self.config.set("acceleration.auto_threads", auto_thr)
+
+        if auto_thr:
+            dyn_pull, dyn_push = TransferAccelerator.compute_dynamic_workers()
+            self.config.set("acceleration.max_pull_workers", dyn_pull)
+            self.config.set("acceleration.max_push_workers", dyn_push)
+        else:
+            try:
+                pw = int(self.settings_pull_w.get())
+                self.config.set("acceleration.max_pull_workers", max(1, min(pw, 16)))
+            except ValueError:
+                pass
+            try:
+                pushw = int(self.settings_push_w.get())
+                self.config.set("acceleration.max_push_workers", max(1, min(pushw, 16)))
+            except ValueError:
+                pass
 
         # Virtualization settings
         self.config.set("virtualization.enabled", self.settings_virt_var.get())
@@ -3919,14 +4765,20 @@ class ADBToolkitApp(ctk.CTk):
         accel.set_virt_enabled(self.settings_virt_var.get())
         accel.verify_checksums = self.settings_verify_var.get()
         accel.checksum_algo = self.settings_algo_var.get()
-        try:
-            accel.max_pull_workers = int(self.settings_pull_w.get())
-        except ValueError:
-            pass
-        try:
-            accel.max_push_workers = int(self.settings_push_w.get())
-        except ValueError:
-            pass
+        accel.auto_threads = auto_thr
+        if auto_thr:
+            accel.max_pull_workers, accel.max_push_workers = (
+                TransferAccelerator.compute_dynamic_workers()
+            )
+        else:
+            try:
+                accel.max_pull_workers = int(self.settings_pull_w.get())
+            except ValueError:
+                pass
+            try:
+                accel.max_push_workers = int(self.settings_push_w.get())
+            except ValueError:
+                pass
 
         # Sync footer toggles
         self._gpu_toggle_var.set(gpu_on)
