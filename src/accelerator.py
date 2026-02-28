@@ -1,396 +1,90 @@
 """
-accelerator.py - Multi-vendor, multi-GPU acceleration & virtualization support.
+accelerator.py — Thin wrapper around **pyaccelerate** for the ADB Toolkit.
 
-Features:
-  - **Enumerate ALL GPUs** on the system (Intel, AMD, NVIDIA) across all
-    available compute backends (CuPy/CUDA, PyOpenCL, Intel oneAPI).
-  - **Rank GPUs** by estimated power (dedicated VRAM, compute units).
-  - **Multi-GPU dispatch**: optionally split workloads across GPUs.
-  - **Virtualization detection**: Hyper-V, VT-x/AMD-V, WSL2.
-  - **Enable/disable toggles** for GPU acceleration and virtualization,
-    persisted through Config.
-
-Inspired by / integrates with:
-  https://github.com/GuilhermeP96/python-gpu-statistical-analysis
+All heavy lifting (GPU/NPU enumeration, thread-pool management, priority
+control, energy profiles) is delegated to the ``pyaccelerate`` package.
+This module re-exports types and provides the ADB-specific helpers
+(``parallel_checksum``, ``verify_transfer``, ``TransferAccelerator``).
 
 Public API
 ----------
-  - ``detect_all_gpus()``        — full enumeration
-  - ``gpu_available()``          — quick boolean
-  - ``get_gpu_info()``           — summary dict for the best GPU
-  - ``get_all_gpus_info()``      — list of dicts for every GPU
+  - ``TransferAccelerator``      — orchestrator used by TransferManager
+  - ``detect_all_gpus()``        — full GPU enumeration
+  - ``detect_all_npus()``        — full NPU enumeration
   - ``detect_virtualization()``  — returns VirtInfo
   - ``parallel_checksum()``      — batch-hash files
   - ``verify_transfer()``        — compare checksums after clone
-  - ``TransferAccelerator``      — orchestrator class used by TransferManager
+  - ``gpu_available()``          — quick boolean
+  - ``npu_available()``          — quick boolean
 """
+
+from __future__ import annotations
 
 import hashlib
 import logging
 import os
-import platform
-import subprocess
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
+
+# ── pyaccelerate imports ────────────────────────────────────────────────
+from pyaccelerate import (
+    Engine,
+    EnergyProfile,
+    MaxMode,
+    TaskPriority,
+)
+from pyaccelerate.gpu import (
+    GPUDevice,
+    detect_all as _detect_gpus,
+    get_all_gpus_info,
+    get_gpu_info,
+    get_install_hint,
+    gpu_available,
+)
+from pyaccelerate.npu import (
+    NPUDevice,
+    detect_all as _detect_npus,
+    get_all_npus_info,
+    get_install_hint as get_npu_install_hint,
+    get_npu_info,
+    npu_available,
+)
+from pyaccelerate.virt import VirtInfo
+from pyaccelerate.virt import detect as _detect_virt
+from pyaccelerate.cpu import detect as _detect_cpu
+from pyaccelerate.memory import get_pressure, get_stats as get_mem_stats
+from pyaccelerate.threads import get_pool, run_parallel as _threads_run_parallel
+from pyaccelerate import (
+    balanced as apply_balanced,
+    max_performance as apply_max_performance,
+    power_saver as apply_power_saver,
+)
 
 log = logging.getLogger("adb_toolkit.accelerator")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  GPU Descriptor
+#  Convenience re-exports  (keeps existing import lines working)
 # ═══════════════════════════════════════════════════════════════════════════
-@dataclass
-class GPUDevice:
-    """Represents one detected GPU compute device."""
-    name: str = ""
-    backend: str = ""          # "cuda", "opencl", "intel"
-    vendor: str = ""           # "NVIDIA", "Intel", "AMD", "unknown"
-    memory_bytes: int = 0      # global VRAM / shared memory
-    compute_units: int = 0     # CUs / SMs / EUs
-    is_discrete: bool = False  # discrete vs integrated
-    _module: Any = None        # runtime reference (cupy, pyopencl context, dpctl device)
-    _index: int = 0            # device ordinal in its backend
-
-    @property
-    def memory_gb(self) -> float:
-        return self.memory_bytes / (1024 ** 3) if self.memory_bytes else 0.0
-
-    @property
-    def score(self) -> int:
-        """Rough power score for ranking. Discrete GPUs get a large bonus."""
-        s = self.memory_bytes // (1024 * 1024)  # MB of VRAM
-        s += self.compute_units * 50
-        if self.is_discrete:
-            s += 100_000  # strongly prefer discrete
-        return s
-
-    def short_label(self) -> str:
-        mem = f"{self.memory_gb:.1f} GB" if self.memory_bytes else "?"
-        return f"{self.name} ({self.backend.upper()}, {mem})"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  Virtualization Info
-# ═══════════════════════════════════════════════════════════════════════════
-@dataclass
-class VirtInfo:
-    """Detected virtualization capabilities."""
-    hyperv_available: bool = False
-    hyperv_running: bool = False
-    vtx_enabled: bool = False     # VT-x / AMD-V
-    wsl_available: bool = False
-    platform_name: str = ""       # "Hyper-V", "WSL2", "VT-x", etc.
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  Multi-GPU Detection  (lazy singleton)
-# ═══════════════════════════════════════════════════════════════════════════
-_all_gpus: List[GPUDevice] = []
-_best_gpu: Optional[GPUDevice] = None
-_virt_info: Optional[VirtInfo] = None
-_detected = False
-_detect_lock = threading.Lock()
-
-
-def _vendor_from_name(name: str) -> Tuple[str, bool]:
-    """Guess vendor and discrete flag from device name string."""
-    nl = name.lower()
-    if any(k in nl for k in ("nvidia", "geforce", "rtx", "gtx", "quadro", "tesla")):
-        return "NVIDIA", True
-    if any(k in nl for k in ("radeon", "amd", "rx ", "vega")):
-        return "AMD", True
-    if any(k in nl for k in ("intel", "uhd", "iris", "arc")):
-        is_discrete = "arc" in nl  # Intel Arc = discrete
-        return "Intel", is_discrete
-    return "unknown", False
-
 
 def detect_all_gpus() -> List[GPUDevice]:
-    """Enumerate ALL GPUs from every available compute backend.
-
-    Returns a list sorted by ``score`` (best first).
-    """
-    global _all_gpus, _best_gpu, _detected
-    if _detected:
-        return _all_gpus
-    with _detect_lock:
-        if _detected:
-            return _all_gpus
-
-        gpus: List[GPUDevice] = []
-        seen_names: set = set()  # avoid duplicates across backends
-
-        # --- CuPy / CUDA ---
-        try:
-            import cupy as cp  # type: ignore[import-untyped]
-            n = cp.cuda.runtime.getDeviceCount()
-            for i in range(n):
-                try:
-                    props = cp.cuda.runtime.getDeviceProperties(i)
-                    dev_name = props["name"].decode()
-                    mem = props.get("totalGlobalMem", 0)
-                    sms = props.get("multiProcessorCount", 0)
-                    vendor, discrete = _vendor_from_name(dev_name)
-                    g = GPUDevice(
-                        name=dev_name, backend="cuda", vendor=vendor,
-                        memory_bytes=mem, compute_units=sms,
-                        is_discrete=discrete, _module=cp, _index=i,
-                    )
-                    gpus.append(g)
-                    seen_names.add(dev_name.lower().strip())
-                except Exception:
-                    pass
-        except Exception as exc:
-            log.debug("CuPy not available: %s", exc)
-
-        # --- PyOpenCL ---
-        try:
-            import pyopencl as cl  # type: ignore[import-untyped]
-            for plat in cl.get_platforms():
-                try:
-                    for dev in plat.get_devices(device_type=cl.device_type.GPU):
-                        dev_name = dev.name.strip()
-                        if dev_name.lower().strip() in seen_names:
-                            continue  # already via CUDA
-                        vendor, discrete = _vendor_from_name(dev_name)
-                        try:
-                            cus = dev.max_compute_units
-                        except Exception:
-                            cus = 0
-                        g = GPUDevice(
-                            name=dev_name, backend="opencl", vendor=vendor,
-                            memory_bytes=dev.global_mem_size,
-                            compute_units=cus,
-                            is_discrete=discrete,
-                            _module=cl, _index=0,
-                        )
-                        gpus.append(g)
-                        seen_names.add(dev_name.lower().strip())
-                except Exception:
-                    continue
-        except Exception as exc:
-            log.debug("pyopencl not available: %s", exc)
-
-        # --- Intel oneAPI (dpctl) ---
-        try:
-            import dpctl  # type: ignore[import-untyped]
-            for dev in dpctl.get_devices():
-                if dev.device_type.name != "gpu":
-                    continue
-                dev_name = dev.name
-                if dev_name.lower().strip() in seen_names:
-                    continue
-                vendor, discrete = _vendor_from_name(dev_name)
-                try:
-                    mem = dev.global_mem_size
-                except Exception:
-                    mem = 0
-                g = GPUDevice(
-                    name=dev_name, backend="intel", vendor=vendor,
-                    memory_bytes=mem, is_discrete=discrete,
-                    _module=dpctl, _index=0,
-                )
-                gpus.append(g)
-                seen_names.add(dev_name.lower().strip())
-        except Exception as exc:
-            log.debug("dpctl not available: %s", exc)
-
-        # --- OS-level detection (for display only, no compute) ---
-        if not gpus:
-            for hw_name in _detect_system_gpu_names():
-                vendor, discrete = _vendor_from_name(hw_name)
-                gpus.append(GPUDevice(
-                    name=hw_name, backend="none", vendor=vendor,
-                    is_discrete=discrete,
-                ))
-
-        gpus.sort(key=lambda g: g.score, reverse=True)
-        _all_gpus = gpus
-        _best_gpu = gpus[0] if gpus else None
-
-        if _best_gpu and _best_gpu.backend != "none":
-            log.info(
-                "Best GPU: %s (%s, score=%d). Total GPUs: %d",
-                _best_gpu.name, _best_gpu.backend, _best_gpu.score, len(gpus),
-            )
-        elif gpus:
-            log.info(
-                "GPU(s) detected but no compute library: %s",
-                ", ".join(g.name for g in gpus),
-            )
-        else:
-            log.info("No GPU detected.")
-
-        _detected = True
-        return _all_gpus
+    """Enumerate ALL GPUs (delegates to pyaccelerate.gpu)."""
+    return _detect_gpus()
 
 
-def _detect_system_gpu_names() -> List[str]:
-    """OS-level GPU name detection (no compute library needed)."""
-    names: List[str] = []
-    try:
-        if platform.system() == "Windows":
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
-                 "(Get-CimInstance Win32_VideoController).Name"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode == 0:
-                for line in r.stdout.strip().splitlines():
-                    line = line.strip()
-                    if line:
-                        names.append(line)
-        else:
-            r = subprocess.run(
-                ["lspci"], capture_output=True, text=True, timeout=10,
-            )
-            for line in r.stdout.splitlines():
-                if "VGA" in line or "3D" in line or "Display" in line:
-                    names.append(line.split(":", 2)[-1].strip())
-    except Exception:
-        pass
-    return names
+def detect_all_npus() -> List[NPUDevice]:
+    """Enumerate ALL NPUs (delegates to pyaccelerate.npu)."""
+    return _detect_npus()
 
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  Virtualization Detection
-# ═══════════════════════════════════════════════════════════════════════════
 def detect_virtualization() -> VirtInfo:
-    """Detect hardware virtualization capabilities."""
-    global _virt_info
-    if _virt_info is not None:
-        return _virt_info
-
-    vi = VirtInfo()
-    vi.platform_name = platform.system()
-
-    if platform.system() != "Windows":
-        # Linux — check /proc/cpuinfo for vmx/svm
-        try:
-            cpuinfo = Path("/proc/cpuinfo").read_text()
-            vi.vtx_enabled = "vmx" in cpuinfo or "svm" in cpuinfo
-        except Exception:
-            pass
-        _virt_info = vi
-        return vi
-
-    # --- Windows ---
-    # Hyper-V
-    try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "(Get-WindowsOptionalFeature -Online -FeatureName Microsoft-Hyper-V).State"],
-            capture_output=True, text=True, timeout=15,
-        )
-        if r.returncode == 0:
-            state = r.stdout.strip().lower()
-            vi.hyperv_available = state in ("enabled", "enablepending")
-            vi.hyperv_running = state == "enabled"
-    except Exception:
-        pass
-
-    # VT-x / AMD-V via systeminfo
-    try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "(Get-CimInstance Win32_Processor).VirtualizationFirmwareEnabled"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0:
-            vi.vtx_enabled = r.stdout.strip().lower() == "true"
-    except Exception:
-        pass
-
-    # WSL
-    try:
-        r = subprocess.run(
-            ["wsl", "--status"], capture_output=True, text=True, timeout=10,
-        )
-        vi.wsl_available = r.returncode == 0
-    except Exception:
-        pass
-
-    _virt_info = vi
-    log.info(
-        "Virtualization: VT-x=%s  Hyper-V=%s  WSL=%s",
-        vi.vtx_enabled, vi.hyperv_running, vi.wsl_available,
-    )
-    return vi
+    """Detect hardware virtualization (delegates to pyaccelerate.virt)."""
+    return _detect_virt()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Public API — quick helpers
-# ═══════════════════════════════════════════════════════════════════════════
-def gpu_available() -> bool:
-    """True if at least one GPU with a compute backend exists."""
-    gpus = detect_all_gpus()
-    return any(g.backend != "none" for g in gpus)
-
-
-def get_gpu_info() -> Dict[str, str]:
-    """Info dict for the **best** GPU."""
-    gpus = detect_all_gpus()
-    best = gpus[0] if gpus else None
-    if best is None or best.backend == "none":
-        hw = best.name if best else "N/A"
-        return {
-            "available": "false", "backend": "cpu",
-            "device": hw or "N/A",
-            "note": "Nenhuma biblioteca GPU instalada — usando CPU multi-thread",
-        }
-    return {
-        "available": "true",
-        "backend": best.backend,
-        "device": best.name,
-        "memory": f"{best.memory_gb:.1f} GB",
-        "vendor": best.vendor,
-        "score": str(best.score),
-    }
-
-
-def get_all_gpus_info() -> List[Dict[str, str]]:
-    """Info dicts for ALL detected GPUs (sorted best-first)."""
-    return [
-        {
-            "name": g.name,
-            "backend": g.backend,
-            "vendor": g.vendor,
-            "memory": f"{g.memory_gb:.1f} GB",
-            "discrete": str(g.is_discrete),
-            "score": str(g.score),
-            "usable": str(g.backend != "none"),
-        }
-        for g in detect_all_gpus()
-    ]
-
-
-def get_install_hint() -> str:
-    """Pip install suggestion based on detected hardware."""
-    gpus = detect_all_gpus()
-    usable = [g for g in gpus if g.backend != "none"]
-    if usable:
-        return ""
-    if not gpus:
-        return "Nenhuma GPU detectada. Multi-threaded CPU será usado."
-    hints = []
-    for g in gpus:
-        vl = g.vendor.lower()
-        if "intel" in vl:
-            hints.append("pip install pyopencl")
-        elif "nvidia" in vl:
-            hints.append("pip install cupy-cuda12x")
-        elif "amd" in vl:
-            hints.append("pip install pyopencl")
-    if hints:
-        return "Instale suporte GPU com:  " + "  ou  ".join(set(hints))
-    return ""
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  Checksum computation — multi-backend
+#  Checksum computation  (ADB-specific — not in pyaccelerate)
 # ═══════════════════════════════════════════════════════════════════════════
 def _hash_file_cpu(path: str, algo: str = "md5") -> str:
     """Hash a single file on CPU (always available)."""
@@ -408,91 +102,6 @@ def _hash_file_cpu(path: str, algo: str = "md5") -> str:
     return h.hexdigest()
 
 
-def _hash_file_gpu(path: str, algo: str = "md5",
-                   gpu: Optional[GPUDevice] = None) -> str:
-    """Hash using the specified (or best) GPU for large-file memory xfer."""
-    gpus = detect_all_gpus()
-    if gpu is None:
-        usable = [g for g in gpus if g.backend != "none"]
-        gpu = usable[0] if usable else None
-
-    if gpu is None or gpu.backend == "none":
-        return _hash_file_cpu(path, algo)
-
-    try:
-        file_size = os.path.getsize(path)
-    except OSError:
-        return _hash_file_cpu(path, algo)
-
-    if file_size < 4 * 1024 * 1024:
-        return _hash_file_cpu(path, algo)
-
-    # --- CUDA ---
-    if gpu.backend == "cuda" and gpu._module is not None:
-        try:
-            cp = gpu._module
-            with cp.cuda.Device(gpu._index):
-                with open(path, "rb") as f:
-                    data = f.read()
-                gpu_arr = cp.frombuffer(bytearray(data), dtype=cp.uint8)
-                _ = int(cp.bitwise_xor.reduce(gpu_arr))
-            h = hashlib.new(algo)
-            h.update(data)
-            return h.hexdigest()
-        except Exception:
-            return _hash_file_cpu(path, algo)
-
-    # --- OpenCL ---
-    if gpu.backend == "opencl" and gpu._module is not None:
-        try:
-            import numpy as np  # type: ignore[import-untyped]
-            cl = gpu._module
-            ctx = None
-            for plat in cl.get_platforms():
-                try:
-                    devs = plat.get_devices(device_type=cl.device_type.GPU)
-                    for d in devs:
-                        if d.name.strip() == gpu.name:
-                            ctx = cl.Context(devices=[d])
-                            break
-                except Exception:
-                    continue
-                if ctx:
-                    break
-            if ctx is None:
-                return _hash_file_cpu(path, algo)
-
-            with open(path, "rb") as f:
-                data = f.read()
-            np_arr = np.frombuffer(bytearray(data), dtype=np.uint8)
-            _ = cl.Buffer(ctx,
-                          cl.mem_flags.READ_ONLY | cl.mem_flags.COPY_HOST_PTR,
-                          hostbuf=np_arr)
-            h = hashlib.new(algo)
-            h.update(data)
-            return h.hexdigest()
-        except Exception:
-            return _hash_file_cpu(path, algo)
-
-    # --- Intel oneAPI ---
-    if gpu.backend == "intel":
-        try:
-            import dpnp  # type: ignore[import-untyped]
-            import numpy as np  # type: ignore[import-untyped]
-            with open(path, "rb") as f:
-                data = f.read()
-            np_arr = np.frombuffer(bytearray(data), dtype=np.uint8)
-            gpu_arr = dpnp.asarray(np_arr)
-            _ = int(dpnp.bitwise_xor.reduce(gpu_arr))
-            h = hashlib.new(algo)
-            h.update(data)
-            return h.hexdigest()
-        except Exception:
-            return _hash_file_cpu(path, algo)
-
-    return _hash_file_cpu(path, algo)
-
-
 def parallel_checksum(
     file_paths: List[str],
     algo: str = "md5",
@@ -506,81 +115,41 @@ def parallel_checksum(
     Parameters
     ----------
     use_gpu : bool
-        If False, force CPU-only hashing regardless of GPU availability.
+        Reserved for future GPU-accelerated hashing (currently CPU-only).
     multi_gpu : bool
-        If True and multiple usable GPUs exist, distribute files across them
-        in a round-robin fashion.
+        Reserved for future multi-GPU hashing.
     """
-    gpus = detect_all_gpus() if use_gpu else []
-    usable = [g for g in gpus if g.backend != "none"]
-
-    # Define round-robin hash helper (always defined to satisfy type checker)
-    def _rr_hash(path: str, idx: int) -> str:
-        if usable:
-            g = usable[idx % len(usable)]
-            return _hash_file_gpu(path, algo, gpu=g)
-        return _hash_file_cpu(path, algo)
-
-    use_multi = multi_gpu and len(usable) > 1 and use_gpu
-
-    if not use_gpu or not usable:
-        hash_fn: Optional[Callable] = _hash_file_cpu
-        label = "CPU"
-    elif use_multi:
-        hash_fn = None  # handled via _rr_hash
-        label = f"Multi-GPU ({len(usable)}x)"
-    else:
-        hash_fn = lambda path: _hash_file_gpu(path, algo, gpu=usable[0])
-        label = f"GPU ({usable[0].name})"
-
     results: Dict[str, str] = {}
     total = len(file_paths)
     done_count = 0
 
-    # Use the shared I/O pool when available; otherwise fall back to a local one
+    # Use the shared pyaccelerate I/O pool
     try:
-        from .adb_base import get_io_pool as _get_pool
-        pool = _get_pool()
-        _owns_pool = False
+        pool = get_pool()
     except Exception:
         pool = ThreadPoolExecutor(max_workers=max_workers)
-        _owns_pool = True
 
-    try:
-        if use_multi:
-            futures = {
-                pool.submit(_rr_hash, fp, i): fp
-                for i, fp in enumerate(file_paths)
-            }
-        else:
-            if hash_fn is None:
-                hash_fn = _hash_file_cpu
-            futures = {
-                pool.submit(hash_fn, fp): fp for fp in file_paths
-            }
+    futures = {pool.submit(_hash_file_cpu, fp, algo): fp for fp in file_paths}
 
-        for fut in as_completed(futures):
-            fp = futures[fut]
-            done_count += 1
+    for fut in as_completed(futures):
+        fp = futures[fut]
+        done_count += 1
+        try:
+            results[fp] = fut.result()
+        except Exception:
+            results[fp] = ""
+        if progress_cb:
             try:
-                results[fp] = fut.result()
+                progress_cb(done_count, total, fp)
             except Exception:
-                results[fp] = ""
-            if progress_cb:
-                try:
-                    progress_cb(done_count, total, fp)
-                except Exception:
-                    pass
-    finally:
-        if _owns_pool:
-            pool.shutdown(wait=False)
+                pass
 
-    log.info("Checksummed %d files via %s (%d workers)", total, label, max_workers)
+    log.info("Checksummed %d files via CPU (%d workers)", total, max_workers)
     return results
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Transfer verification
+#  Transfer verification  (ADB-specific)
 # ═══════════════════════════════════════════════════════════════════════════
 def verify_transfer(
     staging_dir: Path,
@@ -656,67 +225,41 @@ def verify_transfer(
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  TransferAccelerator  (orchestrator used by TransferManager)
+#  TransferAccelerator  — wraps pyaccelerate.Engine
 # ═══════════════════════════════════════════════════════════════════════════
 class TransferAccelerator:
-    """Controls GPU acceleration, multi-threading, and virtualization
-    settings for the transfer pipeline.
+    """Controls GPU/NPU acceleration, multi-threading, energy profile,
+    and virtualization for the transfer pipeline.
 
-    Toggle-friendly: call ``set_gpu_enabled`` / ``set_virt_enabled`` from
-    the GUI to switch at runtime without restarting.
+    Wraps :class:`pyaccelerate.Engine` while preserving the same external
+    API used by the rest of ADB Toolkit.
 
-    When *auto_threads* is ``True`` (the default) the constructor ignores
-    the explicit ``max_pull_workers`` / ``max_push_workers`` values and
-    computes optimal counts from the available CPU cores and RAM.
-    GPU multi-dispatch and virtualization are enabled automatically when the
-    hardware supports them.
+    New pyaccelerate features exposed
+    ----------------------------------
+    * **NPU detection / toggle** — ``npus``, ``usable_npus``, ``best_npu``,
+      ``set_npu_enabled()``.
+    * **Max-Performance mode** — ``max_mode()`` context manager that pins
+      OS priority to HIGH, energy to ULTRA_PERFORMANCE, and I/O priority
+      to high.
+    * **Energy profiles** — ``set_energy()``, ``get_energy()`` for
+      POWER_SAVER / BALANCED / PERFORMANCE / ULTRA_PERFORMANCE.
+    * **Task priority** — ``set_priority()``, ``get_priority()`` for
+      IDLE / BELOW_NORMAL / NORMAL / ABOVE_NORMAL / HIGH / REALTIME.
+    * **Presets** — ``preset_balanced()``, ``preset_max_performance()``,
+      ``preset_power_saver()``.
     """
 
     # --- static helper: dynamic thread calculation ---------------------------
     @staticmethod
     def compute_dynamic_workers() -> Tuple[int, int]:
-        """Return ``(pull_workers, push_workers)`` tuned to the host hardware.
+        """Return ``(pull_workers, push_workers)`` tuned to the host.
 
         Heuristic
         ---------
-        * ADB operations are **I/O-bound** (>95 % time is USB/subprocess wait,
-          and Python releases the GIL during I/O).  We can therefore use far
-          more concurrent threads than CPU cores.
-        * Pull (device → PC):  ``min(cpu_cores * 2, 16)`` — USB bandwidth is
-          the real bottleneck; more threads keep the bus fed.
-        * Push (PC → device):  ``min(cpu_cores * 2, 12)`` — device flash is
-          slightly slower, so a lower ceiling.
-        * On machines with very little RAM (< 4 GB) we clamp further.
-        """
-        cores = os.cpu_count() or 4
-        try:
-            import psutil  # type: ignore[import-untyped]
-            ram_gb = psutil.virtual_memory().total / (1024 ** 3)
-        except Exception:
-            ram_gb = 8.0  # assume reasonable default
-
-        # I/O-optimized scaling (was cores-based; now 2× for I/O-bound workloads)
-        pull = min(cores * 2, 16)
-        push = min(cores * 2, 12)
-
-        # low-RAM clamp
-        if ram_gb < 4:
-            pull = min(pull, 6)
-            push = min(push, 4)
-
-        # ensure at least 2 workers when possible
-        pull = max(2, pull)
-        push = max(2, push)
-        return pull, push
-
-    @staticmethod
-    def io_pool_size() -> int:
-        """Optimal size for a *shared* I/O thread pool.
-
-        Since every ADB call is I/O-bound (subprocess wait + USB transfer),
-        threads spend nearly all their time blocked on I/O.  A pool of
-        ``cores × 3`` (capped at 32) provides enough capacity for multiple
-        operations to overlap without contention.
+        * ADB operations are I/O-bound (>95 % time is USB/subprocess wait).
+        * Pull: ``min(cpu_cores × 2, 16)``
+        * Push: ``min(cpu_cores × 2, 12)``
+        * Low-RAM (< 4 GB) clamp applied.
         """
         cores = os.cpu_count() or 4
         try:
@@ -724,10 +267,21 @@ class TransferAccelerator:
             ram_gb = psutil.virtual_memory().total / (1024 ** 3)
         except Exception:
             ram_gb = 8.0
-        size = min(cores * 3, 32)
+
+        pull = min(cores * 2, 16)
+        push = min(cores * 2, 12)
         if ram_gb < 4:
-            size = min(size, 12)
-        return max(4, size)
+            pull = min(pull, 6)
+            push = min(push, 4)
+        pull = max(2, pull)
+        push = max(2, push)
+        return pull, push
+
+    @staticmethod
+    def io_pool_size() -> int:
+        """Optimal size for the shared I/O thread pool (delegates to Engine)."""
+        e = Engine()
+        return e.io_workers
 
     # --- constructor ---------------------------------------------------------
     def __init__(
@@ -738,9 +292,13 @@ class TransferAccelerator:
         checksum_algo: str = "md5",
         gpu_enabled: bool = True,
         multi_gpu: bool = True,
+        npu_enabled: bool = True,
         virt_enabled: bool = True,
         auto_threads: bool = True,
     ):
+        # Core engine (handles GPU, NPU, CPU, virt, pools)
+        self._engine = Engine()
+
         # Dynamic thread calculation overrides explicit values
         if auto_threads:
             max_pull_workers, max_push_workers = self.compute_dynamic_workers()
@@ -750,165 +308,172 @@ class TransferAccelerator:
         self.auto_threads = auto_threads
         self.verify_checksums = verify_checksums
         self.checksum_algo = checksum_algo
-        self.gpu_enabled = gpu_enabled
-        self.multi_gpu = multi_gpu
+
+        # Propagate toggles to engine
+        self._engine.set_gpu_enabled(gpu_enabled)
+        self._engine.set_multi_gpu(multi_gpu)
+        self._engine.set_npu_enabled(npu_enabled)
         self.virt_enabled = virt_enabled
-        self._gpu_list: Optional[List[GPUDevice]] = None
-        self._virt: Optional[VirtInfo] = None
 
         log.info(
-            "TransferAccelerator: auto=%s  workers=%d/%d  gpu=%s  multi_gpu=%s  virt=%s",
+            "TransferAccelerator: auto=%s  workers=%d/%d  gpu=%s  multi_gpu=%s  npu=%s  virt=%s",
             auto_threads, self.max_pull_workers, self.max_push_workers,
-            gpu_enabled, multi_gpu, virt_enabled,
+            gpu_enabled, multi_gpu, npu_enabled, virt_enabled,
         )
 
-    # --- runtime toggles ---
+    # --- engine access -------------------------------------------------------
+    @property
+    def engine(self) -> Engine:
+        """Direct access to the underlying pyaccelerate Engine."""
+        return self._engine
+
+    # --- runtime toggles (delegate to engine) --------------------------------
     def set_gpu_enabled(self, on: bool):
-        self.gpu_enabled = on
+        self._engine.set_gpu_enabled(on)
 
     def set_multi_gpu(self, on: bool):
-        self.multi_gpu = on
+        self._engine.set_multi_gpu(on)
+
+    def set_npu_enabled(self, on: bool):
+        self._engine.set_npu_enabled(on)
 
     def set_virt_enabled(self, on: bool):
         self.virt_enabled = on
 
-    # --- data ---
+    # --- GPU data (delegated) ------------------------------------------------
     @property
     def gpus(self) -> List[GPUDevice]:
-        if self._gpu_list is None:
-            self._gpu_list = detect_all_gpus()
-        return self._gpu_list
+        return self._engine.gpus
 
     @property
     def usable_gpus(self) -> List[GPUDevice]:
-        return [g for g in self.gpus if g.backend != "none"]
+        return self._engine.usable_gpus
 
     @property
     def best_gpu(self) -> Optional[GPUDevice]:
-        u = self.usable_gpus
-        return u[0] if u else None
-
-    @property
-    def virt(self) -> VirtInfo:
-        if self._virt is None:
-            self._virt = detect_virtualization()
-        return self._virt
+        return self._engine.best_gpu
 
     @property
     def gpu_info(self) -> Dict[str, str]:
         return get_gpu_info()
 
-    def optimal_workers(self, file_count: int, avg_size_bytes: int = 0) -> int:
-        """Return the ideal worker count for a batch of *file_count* files.
+    # --- NPU data (NEW — delegated) ------------------------------------------
+    @property
+    def npus(self) -> List[NPUDevice]:
+        return self._engine.npus
 
-        Considers CPU cores, file count, and average file size.
-        Since ADB operations are I/O-bound, we allow 2× core count for
-        small-to-medium files.  Large files still get fewer workers
-        because USB bandwidth becomes the sole bottleneck.
+    @property
+    def usable_npus(self) -> List[NPUDevice]:
+        return self._engine.usable_npus
+
+    @property
+    def best_npu(self) -> Optional[NPUDevice]:
+        return self._engine.best_npu
+
+    @property
+    def npu_info(self) -> Dict[str, str]:
+        return get_npu_info()
+
+    # --- Virtualization (delegated) ------------------------------------------
+    @property
+    def virt(self) -> VirtInfo:
+        return self._engine.virt
+
+    # --- Priority / Energy (NEW) ---------------------------------------------
+    def set_priority(self, priority: TaskPriority) -> bool:
+        """Set OS scheduling priority for the current process."""
+        return self._engine.set_priority(priority)
+
+    def get_priority(self) -> TaskPriority:
+        return self._engine.get_priority()
+
+    def set_energy(self, profile: EnergyProfile) -> bool:
+        """Set system energy/performance profile."""
+        return self._engine.set_energy(profile)
+
+    def get_energy(self) -> EnergyProfile:
+        return self._engine.get_energy()
+
+    def priority_info(self) -> Dict[str, str]:
+        """Current priority and energy information."""
+        return self._engine.priority_info()
+
+    # --- Presets (NEW) -------------------------------------------------------
+    @staticmethod
+    def preset_max_performance() -> Dict[str, bool]:
+        """Apply max-performance preset (HIGH priority + ULTRA_PERFORMANCE)."""
+        return apply_max_performance()
+
+    @staticmethod
+    def preset_balanced() -> Dict[str, bool]:
+        """Apply balanced preset (NORMAL priority + BALANCED energy)."""
+        return apply_balanced()
+
+    @staticmethod
+    def preset_power_saver() -> Dict[str, bool]:
+        """Apply power-saver preset (BELOW_NORMAL + POWER_SAVER)."""
+        return apply_power_saver()
+
+    # --- Max Mode context manager (NEW) --------------------------------------
+    def max_mode(self, *, set_priority: bool = True, set_energy: bool = True):
+        """Return a MaxMode context manager for peak throughput.
+
+        Usage::
+
+            with accel.max_mode() as m:
+                ...  # OS priority = HIGH, energy = ULTRA_PERFORMANCE
         """
+        return self._engine.max_mode(
+            set_priority=set_priority,
+            set_energy=set_energy,
+        )
+
+    # --- Workers (ADB-specific heuristic) ------------------------------------
+    def optimal_workers(self, file_count: int, avg_size_bytes: int = 0) -> int:
+        """Return the ideal worker count for a batch of *file_count* files."""
         if file_count <= 1:
             return 1
         cores = os.cpu_count() or 4
-        # Large files → fewer threads (USB bandwidth is the bottleneck)
         if avg_size_bytes > 50 * 1024 * 1024:
             cap = min(3, cores)
         elif avg_size_bytes > 10 * 1024 * 1024:
             cap = min(4, cores)
         else:
-            # I/O-bound small files: allow up to 2× cores
             cap = min(self.max_pull_workers, cores * 2, 16)
         return min(cap, file_count)
 
+    # --- Summary / status (delegated with ADB-specific extras) ---------------
     def summary(self) -> str:
-        """Human-readable multi-line summary."""
-        lines: List[str] = ["Aceleração de Transferência"]
+        """Human-readable multi-line summary (pyaccelerate Engine report
+        plus ADB-specific worker/verification info).
+        """
+        lines: List[str] = [self._engine.summary()]
 
-        # GPU section
-        usable = self.usable_gpus
-        if usable and self.gpu_enabled:
-            best = usable[0]
-            backend_names = {
-                "cuda": "CUDA/NVIDIA", "intel": "Intel oneAPI", "opencl": "OpenCL",
-            }
-            bk = backend_names.get(best.backend, best.backend)
-            lines.append(f"  🟢 GPU: {best.name} ({bk}, {best.memory_gb:.1f} GB)")
-            if len(usable) > 1:
-                others = ", ".join(g.name for g in usable[1:])
-                mode = "Multi-GPU ATIVO" if self.multi_gpu else "disponíveis"
-                lines.append(f"      + {others} ({mode})")
-        elif usable and not self.gpu_enabled:
-            lines.append(f"  🔴 GPU: {usable[0].name} (DESATIVADA pelo usuário)")
-        else:
-            all_g = self.gpus
-            if all_g:
-                lines.append(f"  ⚪ GPU: {all_g[0].name} (sem biblioteca)")
-                hint = get_install_hint()
-                if hint:
-                    lines.append(f"      💡 {hint}")
-            else:
-                lines.append("  ⚪ GPU: Nenhuma detectada")
-
-        # Virtualization section
-        vi = self.virt
-        if self.virt_enabled:
-            parts = []
-            if vi.vtx_enabled:
-                parts.append("VT-x/AMD-V")
-            if vi.hyperv_running:
-                parts.append("Hyper-V")
-            if vi.wsl_available:
-                parts.append("WSL2")
-            if parts:
-                lines.append(f"  🟢 Virtualização: {', '.join(parts)}")
-            else:
-                lines.append("  ⚪ Virtualização: Nenhuma detectada")
-        else:
-            lines.append("  🔴 Virtualização: DESATIVADA")
-
-        # Workers
+        # ADB-specific addendum
         cores = os.cpu_count() or "?"
-        mode_label = "dinâmico" if self.auto_threads else "manual"
-        pool_sz = self.io_pool_size()
+        mode_label = "dynamic" if self.auto_threads else "manual"
         lines.append(
             f"  Threads pull/push: {self.max_pull_workers}/{self.max_push_workers}"
             f"  ({mode_label}, {cores} cores)"
         )
         lines.append(
-            f"  Pool I/O compartilhado: {pool_sz} virtual threads"
-        )
-        lines.append(
-            f"  Verificação: {'Ativada' if self.verify_checksums else 'Desativada'}"
+            f"  Verification: {'ON' if self.verify_checksums else 'OFF'}"
             f" ({self.checksum_algo.upper()})"
         )
         return "\n".join(lines)
 
     def status_line(self) -> str:
-        """One-line summary for the status bar."""
-        parts: List[str] = []
+        """One-line summary for the status bar (delegates to engine)."""
+        return self._engine.status_line()
 
-        # GPU
-        usable = self.usable_gpus
-        if usable and self.gpu_enabled:
-            best = usable[0]
-            gpu_txt = f"GPU: {best.name}"
-            if self.multi_gpu and len(usable) > 1:
-                gpu_txt += f" +{len(usable)-1}"
-            parts.append(gpu_txt)
-        elif usable:
-            parts.append("GPU: OFF")
-        else:
-            parts.append("GPU: N/A")
-
-        # Virt
-        vi = self.virt
-        if self.virt_enabled and (vi.vtx_enabled or vi.hyperv_running):
-            virt_txt = "Virt: ON"
-            if vi.hyperv_running:
-                virt_txt += " (Hyper-V)"
-            parts.append(virt_txt)
-        elif self.virt_enabled:
-            parts.append("Virt: N/A")
-        else:
-            parts.append("Virt: OFF")
-
-        return "  |  ".join(parts)
+    def as_dict(self) -> Dict:
+        """Machine-readable snapshot (engine + ADB extras)."""
+        d = self._engine.as_dict()
+        d["adb"] = {
+            "max_pull_workers": self.max_pull_workers,
+            "max_push_workers": self.max_push_workers,
+            "auto_threads": self.auto_threads,
+            "verify_checksums": self.verify_checksums,
+            "checksum_algo": self.checksum_algo,
+        }
+        return d

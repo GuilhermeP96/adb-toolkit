@@ -1,6 +1,7 @@
 customtkinter>=5.2.0
 Pillow>=10.0.0
 requests>=2.28.0
+pyaccelerate>=0.3.0
 
 # iOS support (optional - enables cross-platform transfer)
 # pymobiledevice3>=4.0.0
@@ -10,7 +11,7 @@ requests>=2.28.0
 
 # GPU acceleration (optional - auto-detects and falls back to CPU)
 # Intel GPU:
-pyopencl>=2024.0
+# pyopencl>=2024.0
 # NVIDIA GPU (uncomment if needed):
 # cupy-cuda12x>=13.0
 # Intel oneAPI (alternative to OpenCL, uncomment if needed):

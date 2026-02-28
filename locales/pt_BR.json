@@ -32,6 +32,7 @@
     "virt_off": "🖥️Virt: OFF ({parts})",
     "virt_na": "🖥️Virt: N/A",
     "gpu_toggle": "Aceleração por GPU {state}",
+    "npu_toggle": "Aceleração por NPU {state}",
     "virt_toggle": "Virtualização {state}"
   },
   "common": {
@@ -541,7 +542,14 @@
     "ignore_thumbnails": "Ignorar thumbnails durante transferência",
     "gpu_acceleration": "Aceleração por GPU",
     "multi_gpu": "Multi-GPU",
+    "npu_acceleration": "Aceleração por NPU",
     "virtualization": "Virtualização",
+    "section_performance": "Perfis de Desempenho",
+    "preset_max_performance": "Desempenho Máximo",
+    "preset_balanced": "Equilibrado",
+    "preset_power_saver": "Economia de Energia",
+    "preset_applied": "Perfil aplicado: {name}",
+    "current_profile": "Prioridade: {priority}  |  Energia: {energy}",
     "auto_threads": "Threads automáticas",
     "max_pull_workers": "Workers de Pull (0 = auto):",
     "max_push_workers": "Workers de Push (0 = auto):",

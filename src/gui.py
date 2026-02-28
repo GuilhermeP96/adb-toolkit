@@ -35,7 +35,14 @@ from .device_explorer import (
 )
 from .config import Config
 from .utils import format_bytes, format_duration, open_folder, is_adb_in_path, add_adb_to_path, remove_adb_from_path, get_adb_dir, is_admin
-from .accelerator import TransferAccelerator, detect_all_gpus, detect_virtualization
+from .accelerator import (
+    TransferAccelerator,
+    detect_all_gpus,
+    detect_all_npus,
+    detect_virtualization,
+    EnergyProfile,
+    TaskPriority,
+)
 from .device_interface import DeviceManager, DevicePlatform, UnifiedDeviceInfo
 from .adb_adapter import ADBAdapter
 from .cross_transfer import CrossPlatformTransferManager, CrossTransferConfig, CrossTransferProgress
@@ -242,6 +249,31 @@ class ADBToolkitApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
         ).pack(side="right", padx=2)
 
+        # NPU label + toggle
+        self.lbl_npu_status = ctk.CTkLabel(
+            frame, text="🧠NPU: …", anchor="e",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+        )
+        self.lbl_npu_status.pack(side="right", padx=(4, 2))
+
+        self._npu_toggle_var = ctk.BooleanVar(
+            value=self.config.get("acceleration.npu_enabled", True),
+        )
+        self.sw_npu = ctk.CTkSwitch(
+            frame, text="", width=36,
+            variable=self._npu_toggle_var,
+            command=self._on_npu_toggle,
+            onvalue=True, offvalue=False,
+        )
+        self.sw_npu.pack(side="right", padx=(0, 2))
+
+        # Separator
+        ctk.CTkLabel(
+            frame, text="|", text_color=COLORS["text_dim"],
+            font=ctk.CTkFont(size=11),
+        ).pack(side="right", padx=2)
+
         # Virtualization label + toggle
         self.lbl_virt_status = ctk.CTkLabel(
             frame, text="🖥️Virt: …", anchor="e",
@@ -337,6 +369,33 @@ class ADBToolkitApp(ctk.CTk):
             self._safe_after(0, lambda: self.lbl_virt_status.configure(
                 text=virt_txt, text_color=vcolor,
             ))
+
+            # --- NPU auto-enable ---
+            npus = accel.usable_npus
+            if npus:
+                self._safe_after(0, lambda: self._npu_toggle_var.set(True))
+                accel.set_npu_enabled(True)
+                self.config.set("acceleration.npu_enabled", True)
+
+            npu_enabled = self._npu_toggle_var.get()
+            if npus and npu_enabled:
+                best_n = npus[0]
+                npu_txt = f"🧠NPU: {best_n.name}"
+                ncolor = COLORS["success"]
+            elif npus:
+                npu_txt = f"🧠NPU: OFF ({npus[0].name})"
+                ncolor = COLORS["warning"]
+            else:
+                all_n = accel.npus
+                if all_n:
+                    npu_txt = f"🧠NPU: {all_n[0].name} (no framework)"
+                else:
+                    npu_txt = "🧠NPU: N/A"
+                ncolor = COLORS["text_dim"]
+
+            self._safe_after(0, lambda: self.lbl_npu_status.configure(
+                text=npu_txt, text_color=ncolor,
+            ))
         except Exception as exc:
             log.debug("Footer accel init error: %s", exc)
 
@@ -349,6 +408,15 @@ class ADBToolkitApp(ctk.CTk):
         threading.Thread(target=self._init_accel_footer, daemon=True).start()
         state = t("common.enabled") if on else t("common.disabled")
         self._set_status(t("status.gpu_toggle", state=state))
+
+    def _on_npu_toggle(self):
+        """NPU toggle callback."""
+        on = self._npu_toggle_var.get()
+        self.config.set("acceleration.npu_enabled", on)
+        self.transfer_mgr.accelerator.set_npu_enabled(on)
+        threading.Thread(target=self._init_accel_footer, daemon=True).start()
+        state = t("common.enabled") if on else t("common.disabled")
+        self._set_status(t("status.npu_toggle", state=state))
 
     def _on_virt_toggle(self):
         """Virtualization toggle callback."""
@@ -2664,6 +2732,63 @@ class ADBToolkitApp(ctk.CTk):
             variable=self.settings_multigpu_var,
         ).pack(anchor="w", padx=28, pady=2)
 
+        # NPU enabled checkbox
+        self.settings_npu_var = ctk.BooleanVar(
+            value=self.config.get("acceleration.npu_enabled", True),
+        )
+        ctk.CTkCheckBox(
+            frame, text=t("settings.npu_acceleration"),
+            variable=self.settings_npu_var,
+        ).pack(anchor="w", padx=12, pady=4)
+
+        # ────── Performance Presets ──────
+        preset_header = ctk.CTkFrame(frame, fg_color="transparent")
+        preset_header.pack(fill="x", padx=12, pady=(12, 4))
+        ctk.CTkLabel(
+            preset_header,
+            text=f"🚀 {t('settings.section_performance')}",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w")
+
+        preset_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        preset_frame.pack(fill="x", padx=12, pady=4)
+
+        ctk.CTkButton(
+            preset_frame,
+            text=f"⚡ {t('settings.preset_max_performance')}",
+            width=160,
+            command=self._apply_preset_max_performance,
+            fg_color="#c0392b",
+            hover_color="#e74c3c",
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            preset_frame,
+            text=f"⚖️ {t('settings.preset_balanced')}",
+            width=140,
+            command=self._apply_preset_balanced,
+            fg_color="#2980b9",
+            hover_color="#3498db",
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            preset_frame,
+            text=f"🔋 {t('settings.preset_power_saver')}",
+            width=140,
+            command=self._apply_preset_power_saver,
+            fg_color="#27ae60",
+            hover_color="#2ecc71",
+        ).pack(side="left", padx=4)
+
+        # Current profile info
+        self.lbl_perf_profile = ctk.CTkLabel(
+            frame, text="",
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+        )
+        self.lbl_perf_profile.pack(anchor="w", padx=12, pady=(2, 4))
+        self._refresh_perf_profile_label()
+
         # Checksum verification
         self.settings_verify_var = ctk.BooleanVar(
             value=self.config.get("acceleration.verify_checksums", True),
@@ -4952,6 +5077,36 @@ class ADBToolkitApp(ctk.CTk):
         self._set_status(t("common.done"))
         threading.Thread(target=self._refresh_path_status, daemon=True).start()
 
+    def _refresh_perf_profile_label(self):
+        """Update the performance profile info label."""
+        try:
+            accel = self.transfer_mgr.accelerator
+            info = accel.priority_info()
+            prio = info.get("task_priority", "?")
+            energy = info.get("energy_profile", "?")
+            txt = t("settings.current_profile", priority=prio, energy=energy)
+            self._safe_after(0, lambda: self.lbl_perf_profile.configure(text=txt))
+        except Exception:
+            pass
+
+    def _apply_preset_max_performance(self):
+        """Apply max-performance preset."""
+        TransferAccelerator.preset_max_performance()
+        self._refresh_perf_profile_label()
+        self._set_status(t("settings.preset_applied", name=t("settings.preset_max_performance")))
+
+    def _apply_preset_balanced(self):
+        """Apply balanced preset."""
+        TransferAccelerator.preset_balanced()
+        self._refresh_perf_profile_label()
+        self._set_status(t("settings.preset_applied", name=t("settings.preset_balanced")))
+
+    def _apply_preset_power_saver(self):
+        """Apply power-saver preset."""
+        TransferAccelerator.preset_power_saver()
+        self._refresh_perf_profile_label()
+        self._set_status(t("settings.preset_applied", name=t("settings.preset_power_saver")))
+
     def _toggle_auto_threads(self):
         """Enable/disable the manual thread entry fields based on auto toggle."""
         auto = self.settings_auto_threads_var.get()
@@ -4987,8 +5142,10 @@ class ADBToolkitApp(ctk.CTk):
         # Acceleration settings
         gpu_on = self.settings_gpu_var.get()
         auto_thr = self.settings_auto_threads_var.get()
+        npu_on = self.settings_npu_var.get()
         self.config.set("acceleration.gpu_enabled", gpu_on)
         self.config.set("acceleration.multi_gpu", self.settings_multigpu_var.get())
+        self.config.set("acceleration.npu_enabled", npu_on)
         self.config.set("acceleration.verify_checksums", self.settings_verify_var.get())
         self.config.set("acceleration.checksum_algo", self.settings_algo_var.get())
         self.config.set("acceleration.auto_threads", auto_thr)
@@ -5018,6 +5175,7 @@ class ADBToolkitApp(ctk.CTk):
         accel = self.transfer_mgr.accelerator
         accel.set_gpu_enabled(gpu_on)
         accel.set_multi_gpu(self.settings_multigpu_var.get())
+        accel.set_npu_enabled(npu_on)
         accel.set_virt_enabled(self.settings_virt_var.get())
         accel.verify_checksums = self.settings_verify_var.get()
         accel.checksum_algo = self.settings_algo_var.get()
@@ -5038,8 +5196,10 @@ class ADBToolkitApp(ctk.CTk):
 
         # Sync footer toggles
         self._gpu_toggle_var.set(gpu_on)
+        self._npu_toggle_var.set(npu_on)
         self._virt_toggle_var.set(self.settings_virt_var.get())
         threading.Thread(target=self._init_accel_footer, daemon=True).start()
+        self._refresh_perf_profile_label()
 
         self._set_status(t("settings.saved"))
         messagebox.showinfo(t("settings.title"), t("settings.saved"))

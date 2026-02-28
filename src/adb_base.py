@@ -39,6 +39,8 @@ from typing import (
 )
 
 from .adb_core import ADBCore
+from pyaccelerate.threads import get_pool as _pyaccel_get_pool
+from pyaccelerate.threads import run_parallel as _pyaccel_run_parallel
 
 if TYPE_CHECKING:
     from .accelerator import TransferAccelerator
@@ -61,24 +63,9 @@ log = logging.getLogger("adb_toolkit.base")
 # fed without saturating the ADB daemon.
 # ═══════════════════════════════════════════════════════════════════════════
 
-_io_pool: Optional[ThreadPoolExecutor] = None
-_io_pool_lock = threading.Lock()
-
-
 def get_io_pool() -> ThreadPoolExecutor:
-    """Return (and lazily create) the shared I/O thread pool."""
-    global _io_pool
-    if _io_pool is None:
-        with _io_pool_lock:
-            if _io_pool is None:
-                from .accelerator import TransferAccelerator as _TA
-                size = _TA.io_pool_size()
-                _io_pool = ThreadPoolExecutor(
-                    max_workers=size,
-                    thread_name_prefix="adb-vt",
-                )
-                log.info("Shared I/O pool created: %d virtual threads", size)
-    return _io_pool
+    """Return the shared persistent I/O thread pool (pyaccelerate)."""
+    return _pyaccel_get_pool()
 
 
 def run_parallel(
@@ -92,6 +79,8 @@ def run_parallel(
 
     Uses a **sliding-window** strategy: at most *max_concurrent* tasks
     run simultaneously.  As one finishes, the next is submitted.
+
+    Delegates to ``pyaccelerate.threads.run_parallel``.
 
     Parameters
     ----------
