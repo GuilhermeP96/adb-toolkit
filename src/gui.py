@@ -28,7 +28,7 @@ from .device_explorer import (
     UnsyncedAppDetector, DetectedApp, UNSYNCED_APP_CATEGORIES,
 )
 from .config import Config
-from .utils import format_bytes, format_duration, open_folder
+from .utils import format_bytes, format_duration, open_folder, is_adb_in_path, add_adb_to_path, remove_adb_from_path, get_adb_dir, is_admin
 from .accelerator import TransferAccelerator, detect_all_gpus, detect_virtualization
 
 log = logging.getLogger("adb_toolkit.gui")
@@ -1391,6 +1391,41 @@ class ADBToolkitApp(ctk.CTk):
             command=self._download_platform_tools,
         ).pack(anchor="w", padx=12, pady=8)
 
+        # ────── ADB no PATH ──────
+        path_header = ctk.CTkFrame(frame, fg_color="transparent")
+        path_header.pack(fill="x", padx=12, pady=(16, 4))
+        ctk.CTkLabel(
+            path_header,
+            text="🔗 ADB no PATH do Sistema",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w")
+
+        self.lbl_path_status = ctk.CTkLabel(
+            frame, text="Verificando…",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+            anchor="w",
+        )
+        self.lbl_path_status.pack(anchor="w", padx=12, pady=(2, 4))
+
+        path_btn_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        path_btn_frame.pack(fill="x", padx=12, pady=4)
+
+        self.btn_add_path = ctk.CTkButton(
+            path_btn_frame, text="➕ Adicionar ADB ao PATH",
+            width=240, command=self._add_adb_to_path,
+        )
+        self.btn_add_path.pack(side="left", padx=(0, 8))
+
+        self.btn_remove_path = ctk.CTkButton(
+            path_btn_frame, text="➖ Remover ADB do PATH",
+            width=240, fg_color=COLORS["error"], hover_color="#d03050",
+            command=self._remove_adb_from_path,
+        )
+        self.btn_remove_path.pack(side="left")
+
+        # Populate PATH status async
+        threading.Thread(target=self._refresh_path_status, daemon=True).start()
+
         # Save
         ctk.CTkButton(
             frame, text="💾 Salvar Configurações",
@@ -2722,6 +2757,75 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _refresh_path_status(self):
+        """Check if ADB is in system PATH and update the label."""
+        try:
+            adb_dir = get_adb_dir(self.adb.base_dir)
+            in_path = is_adb_in_path()
+            admin = is_admin()
+
+            if in_path:
+                txt = "✅ ADB está no PATH do sistema (acessível via cmd/terminal)"
+                color = COLORS["success"]
+            elif adb_dir:
+                txt = f"⚠️ ADB não está no PATH. Diretório: {adb_dir}"
+                color = COLORS["warning"]
+            else:
+                txt = "❌ Platform-tools não encontrado. Baixe primeiro."
+                color = COLORS["error"]
+
+            if not admin:
+                txt += "\n⚠️ Sem privilégios admin — modificar PATH pode falhar"
+
+            self._safe_after(0, lambda: self.lbl_path_status.configure(
+                text=txt, text_color=color,
+            ))
+        except Exception:
+            pass
+
+    def _add_adb_to_path(self):
+        """Add ADB platform-tools to system PATH."""
+        adb_dir = get_adb_dir(self.adb.base_dir)
+        if not adb_dir:
+            messagebox.showwarning(
+                "ADB PATH",
+                "Platform-tools não encontrado.\n"
+                "Baixe primeiro usando o botão acima.",
+            )
+            return
+
+        self._set_status("Adicionando ADB ao PATH...")
+        ok, msg = add_adb_to_path(adb_dir)
+        if ok:
+            messagebox.showinfo("ADB PATH", msg)
+        else:
+            messagebox.showerror("ADB PATH", msg)
+        self._set_status("Pronto")
+        threading.Thread(target=self._refresh_path_status, daemon=True).start()
+
+    def _remove_adb_from_path(self):
+        """Remove ADB platform-tools from system PATH."""
+        adb_dir = get_adb_dir(self.adb.base_dir)
+        if not adb_dir:
+            messagebox.showinfo("ADB PATH", "Platform-tools não encontrado.")
+            return
+
+        if not messagebox.askyesno(
+            "Remover ADB do PATH",
+            "Tem certeza que deseja remover o ADB do PATH do sistema?\n\n"
+            "O ADB não será mais acessível diretamente via cmd/terminal.",
+        ):
+            return
+
+        self._set_status("Removendo ADB do PATH...")
+        ok, msg = remove_adb_from_path(adb_dir)
+        if ok:
+            messagebox.showinfo("ADB PATH", msg)
+        else:
+            messagebox.showerror("ADB PATH", msg)
+        self._set_status("Pronto")
+        threading.Thread(target=self._refresh_path_status, daemon=True).start()
 
     def _save_settings(self):
         adb_path = self.entry_adb_path.get().strip()
