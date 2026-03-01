@@ -55,6 +55,7 @@ class TransferConfig:
     sms: bool = True
     messaging_apps: bool = False
     messaging_app_keys: List[str] = field(default_factory=list)
+    messaging_media: bool = True
     unsynced_packages: List[str] = field(default_factory=list)
     wifi: bool = False           # Needs root
     custom_paths: List[str] = field(default_factory=list)
@@ -319,6 +320,7 @@ class TransferManager(ADBManagerBase):
                 manifest = backup_mgr.backup_messaging_apps(
                     source_serial,
                     app_keys=config.messaging_app_keys or None,
+                    include_media=config.messaging_media,
                 )
                 if manifest and not self._cancel_flag.is_set():
                     self._update_progress("restoring", "messaging", steps_done, total_steps)
@@ -448,6 +450,7 @@ class TransferManager(ADBManagerBase):
             contacts=True,
             sms=True,
             messaging_apps=True,
+            messaging_media=True,
             wifi=False,  # Skip Wi-Fi by default (needs root)
         )
         return self.transfer(source_serial, target_serial, config)

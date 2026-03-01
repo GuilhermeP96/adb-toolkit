@@ -763,6 +763,7 @@ class BackupManager(ADBManagerBase):
         serial: str,
         app_keys: Optional[List[str]] = None,
         include_apk: bool = True,
+        include_media: bool = True,
     ) -> Optional[BackupManifest]:
         """Backup messaging app data (WhatsApp, Telegram, Signal, etc.).
 
@@ -770,6 +771,7 @@ class BackupManager(ADBManagerBase):
             serial: Device serial.
             app_keys: List of app keys from MESSAGING_APPS, or None for all.
             include_apk: Whether to also backup the APK.
+            include_media: Whether to also backup media files (photos, videos, etc.).
         """
         from .device_explorer import MESSAGING_APPS, MessagingAppDetector
 
@@ -822,7 +824,7 @@ class BackupManager(ADBManagerBase):
             app_folder.mkdir(parents=True, exist_ok=True)
 
             # 1. Backup media paths (accessible without root) — parallel
-            if existing_paths:
+            if include_media and existing_paths:
                 media_files = self.list_remote_files(
                     serial, existing_paths,
                     ignore_cache=True,

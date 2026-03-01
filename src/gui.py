@@ -1919,10 +1919,19 @@ class ADBToolkitApp(ctk.CTk):
 
         self.messaging_app_vars: Dict[str, ctk.BooleanVar] = {}
         self.backup_msg_frame = ctk.CTkFrame(msg_frame, fg_color="transparent")
-        self.backup_msg_frame.pack(fill="x", padx=12, pady=(0, 8))
+        self.backup_msg_frame.pack(fill="x", padx=12, pady=(0, 4))
 
         # Pre-populate with all known apps (unchecked)
         self._build_messaging_checkboxes(self.backup_msg_frame, self.messaging_app_vars)
+
+        # "Include media" toggle for messaging apps (default: checked)
+        self.var_backup_msg_media = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            msg_frame,
+            text=t("backup.msg_include_media"),
+            variable=self.var_backup_msg_media,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", padx=16, pady=(0, 8))
 
         # ------ Unsynced / Local-Only Apps section ------
         unsync_frame = ctk.CTkFrame(backup_scroll)
@@ -2554,8 +2563,17 @@ class ADBToolkitApp(ctk.CTk):
 
         self.transfer_msg_vars: Dict[str, ctk.BooleanVar] = {}
         self.transfer_msg_frame = ctk.CTkFrame(msg_transfer_frame, fg_color="transparent")
-        self.transfer_msg_frame.pack(fill="x", padx=12, pady=(0, 8))
+        self.transfer_msg_frame.pack(fill="x", padx=12, pady=(0, 4))
         self._build_messaging_checkboxes(self.transfer_msg_frame, self.transfer_msg_vars)
+
+        # "Include media" toggle for transfer messaging apps (default: checked)
+        self.var_transfer_msg_media = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            msg_transfer_frame,
+            text=t("transfer.msg_include_media"),
+            variable=self.var_transfer_msg_media,
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w", padx=16, pady=(0, 8))
 
         # Unsynced apps selection for transfer
         unsync_transfer = ctk.CTkFrame(transfer_scroll)
@@ -3941,6 +3959,7 @@ class ADBToolkitApp(ctk.CTk):
         selected_msg_keys = [
             k for k, v in self.messaging_app_vars.items() if v.get()
         ]
+        include_msg_media = self.var_backup_msg_media.get()
 
         # Gather custom tree paths
         custom_paths = self.backup_tree.get_selected_paths()
@@ -3962,7 +3981,8 @@ class ADBToolkitApp(ctk.CTk):
                         self.backup_mgr.backup_custom_paths(serial, custom_paths)
                     if selected_msg_keys:
                         self.backup_mgr.backup_messaging_apps(
-                            serial, app_keys=selected_msg_keys
+                            serial, app_keys=selected_msg_keys,
+                            include_media=include_msg_media,
                         )
                     if selected_unsynced_pkgs:
                         self.backup_mgr.backup_unsynced_apps(
@@ -3992,7 +4012,8 @@ class ADBToolkitApp(ctk.CTk):
                     # Messaging apps (if any selected)
                     if selected_msg_keys:
                         self.backup_mgr.backup_messaging_apps(
-                            serial, app_keys=selected_msg_keys
+                            serial, app_keys=selected_msg_keys,
+                            include_media=include_msg_media,
                         )
 
                     # Unsynced apps
@@ -4303,6 +4324,7 @@ class ADBToolkitApp(ctk.CTk):
             sms=self.transfer_cat_vars.get("sms", ctk.BooleanVar(value=False)).get(),
             messaging_apps=do_messaging,
             messaging_app_keys=msg_keys,
+            messaging_media=self.var_transfer_msg_media.get(),
             unsynced_packages=unsynced_pkgs,
             custom_paths=custom_paths,
             ignore_cache=self.var_ignore_cache.get(),
