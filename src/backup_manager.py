@@ -170,9 +170,35 @@ class BackupManager(ADBManagerBase):
         include_system: bool = False,
         password: Optional[str] = None,
     ) -> Optional[BackupManifest]:
-        """Perform a full ADB backup (adb backup command)."""
+        """Perform a full ADB backup (adb backup command).
+
+        .. note:: This method relies entirely on the legacy ``adb backup``
+           command.  On Android 12+ (SDK ≥ 31) the on-device confirmation
+           dialog no longer appears and the resulting ``.ab`` file is empty.
+           Use :meth:`backup_files` or :meth:`backup_messaging_apps` instead.
+        """
         self._begin_operation()
         device = self.adb.get_device_details(serial)
+
+        # Guard: adb backup is non-functional on Android 12+ (SDK 31+)
+        if not self._is_legacy_adb_backup_supported(device):
+            log.warning(
+                "Full ADB backup is not supported on Android 12+ (SDK %s). "
+                "The confirmation dialog will not appear on the device. "
+                "Use selective file backup instead.",
+                device.sdk_version,
+            )
+            self._emit(BackupProgress(
+                phase="error",
+                current_item=(
+                    "❌ Backup completo via ADB não é suportado no Android 12+.\n"
+                    "O diálogo de confirmação não aparece mais no dispositivo.\n"
+                    "Use 'Backup Seletivo' ou 'Backup de Mensageiros' em vez disso."
+                ),
+                percent=100,
+            ))
+            return None
+
         folder, backup_id = self._create_backup_folder(device, "full")
         backup_file = folder / "backup.ab"
 
@@ -414,21 +440,29 @@ class BackupManager(ADBManagerBase):
             on_done=_on_apk_done,
         )
 
-        # Optionally backup app data
+        # Optionally backup app data (legacy adb backup — Android < 12 only)
         if include_data and backed_up:
-            data_backup = folder / "app_data.ab"
-            data_args = ["backup", "-noapk", "-noshared"]
-            data_args.extend(backed_up)
-            data_args.extend(["-f", str(data_backup)])
-            self._run_with_confirmation(
-                data_args, serial,
-                title="Backup de Dados dos Apps",
-                message=(
-                    "📱 Confirme o backup de dados dos aplicativos no dispositivo.\n\n"
-                    "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
-                ),
-                timeout=3600,
-            )
+            if self._is_legacy_adb_backup_supported(device):
+                data_backup = folder / "app_data.ab"
+                data_args = ["backup", "-noapk", "-noshared"]
+                data_args.extend(backed_up)
+                data_args.extend(["-f", str(data_backup)])
+                self._run_with_confirmation(
+                    data_args, serial,
+                    title="Backup de Dados dos Apps",
+                    message=(
+                        "📱 Confirme o backup de dados dos aplicativos no dispositivo.\n\n"
+                        "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                    ),
+                    timeout=3600,
+                )
+            else:
+                log.info(
+                    "Skipping app data backup via 'adb backup' — "
+                    "not supported on Android 12+ (SDK %s). "
+                    "APKs were backed up successfully.",
+                    device.sdk_version,
+                )
 
         duration = time.time() - self._start_time
         actual_size = self.get_backup_size(backup_id)
@@ -532,30 +566,34 @@ class BackupManager(ADBManagerBase):
             log.debug("VCF content query method: %s", exc)
 
         # === Method 2: Use `adb backup` for contacts provider ===
-        try:
-            self._emit(BackupProgress(
-                phase="contacts", current_item="ADB backup de contatos..."
-            ))
-            contacts_ab = folder / "contacts.ab"
-            self._run_with_confirmation(
-                ["backup", "-f", str(contacts_ab), "com.android.providers.contacts"],
-                serial,
-                title="Backup de Contatos",
-                message=(
-                    "📱 Confirme o backup no dispositivo para salvar os contatos.\n\n"
-                    "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
-                ),
-                timeout=120,
-            )
-            # Check if the backup actually has content (>24 bytes = non-empty)
-            if contacts_ab.exists() and contacts_ab.stat().st_size > 24:
-                file_count += 1
-                methods_tried.append("adb_backup")
-            elif contacts_ab.exists():
-                contacts_ab.unlink()
-                log.info("ADB contacts backup was empty (Android 12+ restriction)")
-        except Exception as exc:
-            log.debug("ADB backup contacts: %s", exc)
+        # (only on Android < 12 — dialog doesn't appear on 12+)
+        if self._is_legacy_adb_backup_supported(device):
+            try:
+                self._emit(BackupProgress(
+                    phase="contacts", current_item="ADB backup de contatos..."
+                ))
+                contacts_ab = folder / "contacts.ab"
+                self._run_with_confirmation(
+                    ["backup", "-f", str(contacts_ab), "com.android.providers.contacts"],
+                    serial,
+                    title="Backup de Contatos",
+                    message=(
+                        "📱 Confirme o backup no dispositivo para salvar os contatos.\n\n"
+                        "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                    ),
+                    timeout=120,
+                )
+                # Check if the backup actually has content (>24 bytes = non-empty)
+                if contacts_ab.exists() and contacts_ab.stat().st_size > 24:
+                    file_count += 1
+                    methods_tried.append("adb_backup")
+                elif contacts_ab.exists():
+                    contacts_ab.unlink()
+                    log.info("ADB contacts backup was empty")
+            except Exception as exc:
+                log.debug("ADB backup contacts: %s", exc)
+        else:
+            log.info("Skipping ADB contacts backup — not supported on SDK %s", device.sdk_version)
 
         # === Method 3: Direct DB pull (needs root) ===
         try:
@@ -687,30 +725,33 @@ class BackupManager(ADBManagerBase):
         except Exception as exc:
             log.warning("SMS content query failed: %s", exc)
 
-        # === Method 2: ADB backup ===
-        try:
-            self._emit(BackupProgress(
-                phase="sms", current_item="ADB backup de SMS..."
-            ))
-            sms_ab = folder / "sms.ab"
-            self._run_with_confirmation(
-                ["backup", "-f", str(sms_ab), "com.android.providers.telephony"],
-                serial,
-                title="Backup de SMS",
-                message=(
-                    "📱 Confirme o backup no dispositivo para salvar as mensagens.\n\n"
-                    "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
-                ),
-                timeout=120,
-            )
-            if sms_ab.exists() and sms_ab.stat().st_size > 24:
-                file_count += 1
-                methods_tried.append("adb_backup")
-            elif sms_ab.exists():
-                sms_ab.unlink()
-                log.info("ADB SMS backup was empty (Android 12+ restriction)")
-        except Exception as exc:
-            log.debug("ADB backup SMS: %s", exc)
+        # === Method 2: ADB backup (Android < 12 only) ===
+        if self._is_legacy_adb_backup_supported(device):
+            try:
+                self._emit(BackupProgress(
+                    phase="sms", current_item="ADB backup de SMS..."
+                ))
+                sms_ab = folder / "sms.ab"
+                self._run_with_confirmation(
+                    ["backup", "-f", str(sms_ab), "com.android.providers.telephony"],
+                    serial,
+                    title="Backup de SMS",
+                    message=(
+                        "📱 Confirme o backup no dispositivo para salvar as mensagens.\n\n"
+                        "Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                    ),
+                    timeout=120,
+                )
+                if sms_ab.exists() and sms_ab.stat().st_size > 24:
+                    file_count += 1
+                    methods_tried.append("adb_backup")
+                elif sms_ab.exists():
+                    sms_ab.unlink()
+                    log.info("ADB SMS backup was empty")
+            except Exception as exc:
+                log.debug("ADB backup SMS: %s", exc)
+        else:
+            log.info("Skipping ADB SMS backup — not supported on SDK %s", device.sdk_version)
 
         # === Method 3: Direct DB pull (needs root) ===
         try:
@@ -855,23 +896,29 @@ class BackupManager(ADBManagerBase):
                     except Exception as exc:
                         log.warning("Failed to backup APK for %s: %s", pkg, exc)
 
-            # 3. Backup app data via ADB backup (if supported)
-            for pkg in packages:
-                try:
-                    data_file = app_folder / f"{pkg}_data.ab"
-                    self._run_with_confirmation(
-                        ["backup", "-f", str(data_file), "-noapk", pkg],
-                        serial,
-                        title="Backup de Dados do App",
-                        message=(
-                            f"📱 Confirme o backup de dados do app no dispositivo.\n\n"
-                            f"App: {pkg}\n"
-                            f"Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
-                        ),
-                        timeout=300,
-                    )
-                except Exception as exc:
-                    log.debug("ADB backup for %s skipped: %s", pkg, exc)
+            # 3. Backup app data via ADB backup (Android < 12 only)
+            if self._is_legacy_adb_backup_supported(device):
+                for pkg in packages:
+                    try:
+                        data_file = app_folder / f"{pkg}_data.ab"
+                        self._run_with_confirmation(
+                            ["backup", "-f", str(data_file), "-noapk", pkg],
+                            serial,
+                            title="Backup de Dados do App",
+                            message=(
+                                f"📱 Confirme o backup de dados do app no dispositivo.\n\n"
+                                f"App: {pkg}\n"
+                                f"Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                            ),
+                            timeout=300,
+                        )
+                    except Exception as exc:
+                        log.debug("ADB backup for %s skipped: %s", pkg, exc)
+            else:
+                log.debug(
+                    "Skipping ADB app data backup for %s — not supported on SDK %s",
+                    ", ".join(packages), device.sdk_version,
+                )
 
             backed_up_apps.append(app_key)
 
@@ -1009,22 +1056,25 @@ class BackupManager(ADBManagerBase):
                     pkg_files += count
                     total_bytes += bytes_pulled
 
-            # 3. ADB backup (app internal data — may require confirmation)
-            try:
-                data_file = pkg_folder / f"{pkg}_data.ab"
-                self._run_with_confirmation(
-                    ["backup", "-f", str(data_file), "-noapk", pkg],
-                    serial,
-                    title="Backup de Dados do App",
-                    message=(
-                        f"📱 Confirme o backup de dados do app no dispositivo.\n\n"
-                        f"App: {pkg}\n"
-                        f"Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
-                    ),
-                    timeout=60,
-                )
-            except Exception as exc:
-                log.debug("ADB backup for %s skipped: %s", pkg, exc)
+            # 3. ADB backup (app internal data — Android < 12 only)
+            if self._is_legacy_adb_backup_supported(device):
+                try:
+                    data_file = pkg_folder / f"{pkg}_data.ab"
+                    self._run_with_confirmation(
+                        ["backup", "-f", str(data_file), "-noapk", pkg],
+                        serial,
+                        title="Backup de Dados do App",
+                        message=(
+                            f"📱 Confirme o backup de dados do app no dispositivo.\n\n"
+                            f"App: {pkg}\n"
+                            f"Toque em 'FAZER BACKUP DOS MEUS DADOS' na tela do aparelho."
+                        ),
+                        timeout=60,
+                    )
+                except Exception as exc:
+                    log.debug("ADB backup for %s skipped: %s", pkg, exc)
+            else:
+                log.debug("Skipping ADB backup for %s — SDK %s", pkg, device.sdk_version)
 
             total_files += pkg_files
             backed_up.append(pkg)

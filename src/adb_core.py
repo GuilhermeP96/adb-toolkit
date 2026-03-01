@@ -204,6 +204,16 @@ class ADBCore:
             log.warning("ADB returned %d: %s", result.returncode, result.stderr.strip())
         return result
 
+    def run_cmd(self, args: List[str], timeout: int = 120) -> str:
+        """Run a raw ADB command and return stdout as a string.
+
+        This is a convenience wrapper around :meth:`run` for call sites
+        that pass ``["-s", serial, ...]`` directly and expect a plain
+        string back (e.g. ``agent_manager.py``).
+        """
+        r = self.run(args, timeout=timeout)
+        return (r.stdout or "").strip()
+
     def run_shell(self, shell_cmd: str, serial: Optional[str] = None, timeout: int = 60) -> str:
         """Run `adb shell <cmd>` and return stdout."""
         try:

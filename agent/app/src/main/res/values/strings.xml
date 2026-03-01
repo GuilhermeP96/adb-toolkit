@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ADB Toolkit Agent</string>
+    <string name="notification_channel_name">Agent Service</string>
+    <string name="notification_channel_desc">Keeps the agent running for file transfers and remote commands</string>
+    <string name="transfer_channel_name">File Transfer</string>
+    <string name="transfer_channel_desc">Active file transfer notifications</string>
+
+    <!-- Permission descriptions -->
+    <string name="perm_storage">Acesso total a arquivos</string>
+    <string name="perm_contacts">Leitura de contatos</string>
+    <string name="perm_sms">Leitura de SMS</string>
+    <string name="perm_usage">Estatísticas de uso</string>
+    <string name="perm_accessibility">Serviço de acessibilidade</string>
+    <string name="perm_device_admin">Administrador do dispositivo</string>
+    <string name="perm_battery">Sem otimização de bateria</string>
+    <string name="perm_notifications">Notificações</string>
+    <string name="perm_install">Instalar pacotes</string>
+
+    <!-- Status -->
+    <string name="status_running">Agent rodando</string>
+    <string name="status_stopped">Agent parado</string>
+    <string name="btn_start">Iniciar Agent</string>
+    <string name="btn_stop">Parar Agent</string>
+    <string name="btn_grant_all">Conceder todas as permissões via ADB</string>
+
+    <!-- Accessibility -->
+    <string name="accessibility_description">ADB Toolkit Agent — automação de interface para backup e restauração de dados. Usado apenas quando comandado pelo toolkit no PC.</string>
+
+    <!-- Device Admin -->
+    <string name="device_admin_description">Permite ao ADB Toolkit Agent gerenciar políticas de segurança, bloquear/desbloquear o dispositivo e realizar operações administrativas remotamente.</string>
+
+    <!-- Security / Pairing -->
+    <string name="security_channel_name">Segurança e Pareamento</string>
+    <string name="security_channel_desc">Solicitações de pareamento e alertas de segurança</string>
+    <string name="pairing_title">Solicitação de Pareamento</string>
+    <string name="pairing_subtitle">Dispositivo: %s</string>
+    <string name="pairing_description">Código de confirmação: %s\n\nVerifique se este código é igual no outro dispositivo.\nAutentique com biometria ou PIN para aprovar.</string>
+    <string name="pairing_approved">Pareamento aprovado com sucesso</string>
+    <string name="pairing_rejected">Pareamento rejeitado</string>
+    <string name="pairing_expired">Solicitação de pareamento expirada</string>
+    <string name="pairing_insecure_device">Dispositivo sem bloqueio de tela.\nConfigure PIN, padrão ou senha antes de parear.</string>
+    <string name="biometric_title">Confirmar Pareamento</string>
+    <string name="biometric_subtitle">Autentique para parear com %s</string>
+    <string name="biometric_description">Código: %s — Verifique se é igual no outro dispositivo</string>
+    <string name="revoke_biometric_title">Revogar Pareamento</string>
+    <string name="revoke_biometric_subtitle">Autentique para desconectar %s</string>
+    <string name="revoke_biometric_description">Esta ação removerá a conexão segura com o dispositivo</string>
+    <string name="perm_biometric">Autenticação biométrica</string>
+
+    <!-- Bottom Navigation -->
+    <string name="nav_dashboard">Dashboard</string>
+    <string name="nav_files">Arquivos</string>
+    <string name="nav_apps">Apps</string>
+    <string name="nav_terminal">Terminal</string>
+    <string name="nav_settings">Configurações</string>
+
+    <!-- Dashboard Cards -->
+    <string name="card_server">Servidor Agent</string>
+    <string name="card_device">Informações do Dispositivo</string>
+    <string name="card_quick_actions">Ações Rápidas</string>
+    <string name="card_log">Log de Conexões</string>
+    <string name="label_battery">Bateria</string>
+    <string name="label_storage_free">Armazenamento livre</string>
+    <string name="label_ram_free">RAM livre</string>
+    <string name="action_screenshot">Screenshot</string>
+    <string name="action_screenrecord">Gravar Tela</string>
+    <string name="action_export_contacts">Exportar Contatos</string>
+    <string name="action_export_sms">Exportar SMS</string>
+
+    <!-- Files Tab -->
+    <string name="action_upload">Upload</string>
+    <string name="action_new_folder">Nova Pasta</string>
+
+    <!-- Apps Tab -->
+    <string name="hint_search_apps">Pesquisar apps…</string>
+    <string name="filter_all">Todos</string>
+    <string name="filter_user">Usuário</string>
+    <string name="filter_system">Sistema</string>
+    <string name="action_install_apk">Instalar APK</string>
+    <string name="action_batch_uninstall">Desinstalar em lote</string>
+
+    <!-- Terminal Tab -->
+    <string name="hint_command">Comando…</string>
+
+    <!-- Settings Tab -->
+    <string name="card_security">Segurança e Pareamento</string>
+    <string name="card_permissions">Permissões</string>
+    <string name="card_token">Token de Autenticação</string>
+    <string name="card_python">Python Runtime</string>
+    <string name="card_about">Sobre</string>
+    <string name="action_revoke_all">Revogar Todos</string>
+    <string name="action_new_token">Gerar Novo Token</string>
+    <string name="action_setup_python">Configurar Python</string>
+</resources>

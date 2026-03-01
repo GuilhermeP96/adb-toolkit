@@ -356,6 +356,28 @@ class ADBManagerBase:
     def _is_cancelled(self) -> bool:
         return self._cancel_flag.is_set()
 
+    # -- legacy adb backup / restore check ------------------------------------
+    # Android 12 (SDK 31) deprecated ``adb backup`` / ``adb restore``.
+    # Starting with Android 12 the on-device confirmation dialog may not
+    # appear at all and the resulting .ab file is empty (≤ 24 bytes header).
+    # On Android 13+ many OEMs (especially Xiaomi / HyperOS, Samsung OneUI 5+)
+    # completely removed the dialog, making the commands unusable.
+    _ADB_BACKUP_MAX_SDK = 30  # last SDK where adb backup works reliably
+
+    @staticmethod
+    def _is_legacy_adb_backup_supported(device) -> bool:
+        """Return True if the device supports legacy ``adb backup``/``restore``.
+
+        Checks ``device.sdk_version`` (a string like ``"35"``).  Returns
+        *False* for Android 12 (SDK 31) and above.
+        """
+        try:
+            sdk = int(device.sdk_version)
+        except (ValueError, TypeError, AttributeError):
+            # If we can't determine the SDK, assume modern → unsupported
+            return False
+        return sdk <= ADBManagerBase._ADB_BACKUP_MAX_SDK
+
     def _begin_operation(self):
         """Call at the start of any top-level operation."""
         self._cancel_flag.clear()

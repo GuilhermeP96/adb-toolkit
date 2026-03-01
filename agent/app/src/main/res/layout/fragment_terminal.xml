@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <!-- Terminal output -->
+    <ScrollView
+        android:id="@+id/svTerminal"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#FF1E1E1E"
+        android:padding="8dp"
+        android:fillViewport="true">
+
+        <TextView
+            android:id="@+id/tvTerminalOutput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="13sp"
+            android:textColor="#FFCCCCCC"
+            android:typeface="monospace"
+            android:lineSpacingMultiplier="1.2"
+            tools:text="shell@device:/ $ ls\nsdcard  data  system\nshell@device:/ $ " />
+
+    </ScrollView>
+
+    <!-- Quick command chips -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:scrollbars="none"
+        android:background="#FF2D2D2D"
+        android:paddingHorizontal="4dp"
+        android:paddingVertical="4dp">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipGetprop"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="getprop"
+                android:textColor="#FFCCCCCC"
+                app:chipBackgroundColor="#FF3D3D3D"
+                style="@style/Widget.Material3.Chip.Assist" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipDf"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="df -h"
+                android:textColor="#FFCCCCCC"
+                app:chipBackgroundColor="#FF3D3D3D"
+                style="@style/Widget.Material3.Chip.Assist" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipPs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="ps -A"
+                android:textColor="#FFCCCCCC"
+                app:chipBackgroundColor="#FF3D3D3D"
+                style="@style/Widget.Material3.Chip.Assist" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipTop"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="top -n 1"
+                android:textColor="#FFCCCCCC"
+                app:chipBackgroundColor="#FF3D3D3D"
+                style="@style/Widget.Material3.Chip.Assist" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipDumpsys"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="dumpsys battery"
+                android:textColor="#FFCCCCCC"
+                app:chipBackgroundColor="#FF3D3D3D"
+                style="@style/Widget.Material3.Chip.Assist" />
+
+            <com.google.android.material.chip.Chip
+                android:id="@+id/chipLogcat"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="logcat -d -t 50"
+                android:textColor="#FFCCCCCC"
+                app:chipBackgroundColor="#FF3D3D3D"
+                style="@style/Widget.Material3.Chip.Assist" />
+
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <!-- Command input -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:background="#FF2D2D2D"
+        android:padding="8dp"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="$"
+            android:textColor="#FF00CC00"
+            android:textSize="16sp"
+            android:fontFamily="monospace"
+            android:layout_marginEnd="8dp" />
+
+        <EditText
+            android:id="@+id/etCommand"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:hint="@string/hint_command"
+            android:textColor="#FFCCCCCC"
+            android:textColorHint="#FF666666"
+            android:fontFamily="monospace"
+            android:textSize="14sp"
+            android:background="@android:color/transparent"
+            android:inputType="text"
+            android:imeOptions="actionSend"
+            android:singleLine="true" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSend"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            app:icon="@android:drawable/ic_media_play"
+            app:iconGravity="textStart"
+            app:iconPadding="0dp"
+            style="@style/Widget.Material3.Button.IconButton.Filled" />
+
+    </LinearLayout>
+
+</LinearLayout>

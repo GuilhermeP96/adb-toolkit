@@ -60,6 +60,25 @@ class RestoreManager(ADBManagerBase):
             log.error("Backup %s not found", backup_id)
             return False
 
+        # Check if target device supports legacy adb restore
+        device = self.adb.get_device_details(serial)
+        if not self._is_legacy_adb_backup_supported(device):
+            log.warning(
+                "Full ADB restore is not supported on Android 12+ (SDK %s). "
+                "The confirmation dialog will not appear on the device.",
+                device.sdk_version,
+            )
+            self._emit(BackupProgress(
+                phase="error",
+                current_item=(
+                    "❌ Restauração completa via ADB não é suportada no Android 12+.\n"
+                    "O diálogo de confirmação não aparece mais no dispositivo.\n"
+                    "Use restauração seletiva ou Google Backup."
+                ),
+                percent=100,
+            ))
+            return False
+
         folder = self.backup_dir / backup_id
         backup_file = folder / "backup.ab"
 
@@ -243,26 +262,34 @@ class RestoreManager(ADBManagerBase):
             except Exception as exc:
                 log.warning("Install error for %s: %s", pkg_name, exc)
 
-        # Restore app data if requested
+        # Restore app data if requested (legacy adb restore — Android < 12)
         if restore_data:
             data_file = self.backup_dir / backup_id / "app_data.ab"
             if data_file.exists() and data_file.stat().st_size > 24:
-                self._emit(BackupProgress(
-                    phase="restoring_app_data",
-                    sub_phase="app_data",
-                    current_item="Restaurando dados dos apps...",
-                    percent=90,
-                ))
-                self._run_with_confirmation(
-                    ["restore", str(data_file)],
-                    serial,
-                    title="Restauração de Dados",
-                    message=(
-                        "📱 Confirme a restauração de dados no dispositivo.\n\n"
-                        "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
-                    ),
-                    timeout=3600,
-                )
+                device = self.adb.get_device_details(serial)
+                if self._is_legacy_adb_backup_supported(device):
+                    self._emit(BackupProgress(
+                        phase="restoring_app_data",
+                        sub_phase="app_data",
+                        current_item="Restaurando dados dos apps...",
+                        percent=90,
+                    ))
+                    self._run_with_confirmation(
+                        ["restore", str(data_file)],
+                        serial,
+                        title="Restauração de Dados",
+                        message=(
+                            "📱 Confirme a restauração de dados no dispositivo.\n\n"
+                            "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                        ),
+                        timeout=3600,
+                    )
+                else:
+                    log.info(
+                        "Skipping app data restore via 'adb restore' — "
+                        "not supported on Android 12+ (SDK %s)",
+                        device.sdk_version,
+                    )
 
         self._emit(BackupProgress(phase="complete", percent=100))
         log.info("Restored %d/%d apps", success, total)
@@ -303,29 +330,33 @@ class RestoreManager(ADBManagerBase):
             except Exception as exc:
                 log.warning("VCF import failed: %s", exc)
 
-        # --- Strategy 2: .ab file → ADB restore (only if non-empty) ---
+        # --- Strategy 2: .ab file → ADB restore (only if non-empty AND target Android < 12) ---
         contacts_ab = folder / "contacts.ab"
         if contacts_ab.exists() and contacts_ab.stat().st_size > 24:
-            try:
-                self._emit(BackupProgress(
-                    phase="restoring_contacts",
-                    current_item="ADB restore de contatos...",
-                    percent=50,
-                ))
-                result = self._run_with_confirmation(
-                    ["restore", str(contacts_ab)],
-                    serial,
-                    title="Restauração de Contatos",
-                    message=(
-                        "📱 Confirme a restauração no dispositivo para recuperar os contatos.\n\n"
-                        "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
-                    ),
-                    timeout=120,
-                )
-                if result.returncode == 0:
-                    success = True
-            except Exception as exc:
-                log.warning("ADB contacts restore failed: %s", exc)
+            device = self.adb.get_device_details(serial)
+            if self._is_legacy_adb_backup_supported(device):
+                try:
+                    self._emit(BackupProgress(
+                        phase="restoring_contacts",
+                        current_item="ADB restore de contatos...",
+                        percent=50,
+                    ))
+                    result = self._run_with_confirmation(
+                        ["restore", str(contacts_ab)],
+                        serial,
+                        title="Restauração de Contatos",
+                        message=(
+                            "📱 Confirme a restauração no dispositivo para recuperar os contatos.\n\n"
+                            "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                        ),
+                        timeout=120,
+                    )
+                    if result.returncode == 0:
+                        success = True
+                except Exception as exc:
+                    log.warning("ADB contacts restore failed: %s", exc)
+            else:
+                log.info("Skipping contacts.ab restore — not supported on SDK %s", device.sdk_version)
         elif contacts_ab.exists():
             log.info("Skipping contacts.ab — file is empty (Android 12+ restriction)")
 
@@ -428,29 +459,33 @@ class RestoreManager(ADBManagerBase):
             except Exception as exc:
                 log.warning("SMS JSON restore failed: %s", exc)
 
-        # --- Strategy 2: .ab file → ADB restore (only if non-empty) ---
+        # --- Strategy 2: .ab file → ADB restore (only if non-empty AND target Android < 12) ---
         sms_ab = folder / "sms.ab"
         if sms_ab.exists() and sms_ab.stat().st_size > 24:
-            try:
-                self._emit(BackupProgress(
-                    phase="restoring_sms",
-                    current_item="ADB restore de SMS...",
-                    percent=85,
-                ))
-                result = self._run_with_confirmation(
-                    ["restore", str(sms_ab)],
-                    serial,
-                    title="Restauração de SMS",
-                    message=(
-                        "📱 Confirme a restauração no dispositivo para recuperar as mensagens.\n\n"
-                        "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
-                    ),
-                    timeout=120,
-                )
-                if result.returncode == 0:
-                    success = True
-            except Exception as exc:
-                log.warning("ADB SMS restore failed: %s", exc)
+            device = self.adb.get_device_details(serial)
+            if self._is_legacy_adb_backup_supported(device):
+                try:
+                    self._emit(BackupProgress(
+                        phase="restoring_sms",
+                        current_item="ADB restore de SMS...",
+                        percent=85,
+                    ))
+                    result = self._run_with_confirmation(
+                        ["restore", str(sms_ab)],
+                        serial,
+                        title="Restauração de SMS",
+                        message=(
+                            "📱 Confirme a restauração no dispositivo para recuperar as mensagens.\n\n"
+                            "Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                        ),
+                        timeout=120,
+                    )
+                    if result.returncode == 0:
+                        success = True
+                except Exception as exc:
+                    log.warning("ADB SMS restore failed: %s", exc)
+            else:
+                log.info("Skipping sms.ab restore — not supported on SDK %s", device.sdk_version)
         elif sms_ab.exists():
             log.info("Skipping sms.ab — file is empty (Android 12+ restriction)")
 
@@ -564,20 +599,27 @@ class RestoreManager(ADBManagerBase):
                             ),
                         )
 
-                # 3. Restore app data (.ab files — skip empty ones)
-                for ab_file in app_dir.glob("*_data.ab"):
-                    if ab_file.stat().st_size > 24:
-                        self._run_with_confirmation(
-                            ["restore", str(ab_file)],
-                            serial,
-                            title="Restauração de Dados do App",
-                            message=(
-                                f"📱 Confirme a restauração de dados do app no dispositivo.\n\n"
-                                f"App: {app_key}\n"
-                                f"Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
-                            ),
-                            timeout=300,
-                        )
+                # 3. Restore app data (.ab files — Android < 12 only)
+                _device = self.adb.get_device_details(serial)
+                if self._is_legacy_adb_backup_supported(_device):
+                    for ab_file in app_dir.glob("*_data.ab"):
+                        if ab_file.stat().st_size > 24:
+                            self._run_with_confirmation(
+                                ["restore", str(ab_file)],
+                                serial,
+                                title="Restauração de Dados do App",
+                                message=(
+                                    f"📱 Confirme a restauração de dados do app no dispositivo.\n\n"
+                                    f"App: {app_key}\n"
+                                    f"Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                                ),
+                                timeout=300,
+                            )
+                else:
+                    log.debug(
+                        "Skipping .ab restore for %s — not supported on SDK %s",
+                        app_key, _device.sdk_version,
+                    )
 
                 success_count += 1
 
@@ -723,23 +765,27 @@ class RestoreManager(ADBManagerBase):
                         ),
                     )
 
-            # 3. ADB restore from .ab file
+            # 3. ADB restore from .ab file (Android < 12 only)
             ab_file = pkg_dir / f"{pkg}_data.ab"
             if ab_file.exists() and ab_file.stat().st_size > 24:
-                try:
-                    self._run_with_confirmation(
-                        ["restore", str(ab_file)],
-                        serial,
-                        title="Restauração de Dados do App",
-                        message=(
-                            f"📱 Confirme a restauração de dados no dispositivo.\n\n"
-                            f"App: {pkg}\n"
-                            f"Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
-                        ),
-                        timeout=120,
-                    )
-                except Exception as exc:
-                    log.debug("ADB restore for %s skipped: %s", pkg, exc)
+                _device = self.adb.get_device_details(serial)
+                if self._is_legacy_adb_backup_supported(_device):
+                    try:
+                        self._run_with_confirmation(
+                            ["restore", str(ab_file)],
+                            serial,
+                            title="Restauração de Dados do App",
+                            message=(
+                                f"📱 Confirme a restauração de dados no dispositivo.\n\n"
+                                f"App: {pkg}\n"
+                                f"Toque em 'RESTAURAR MEUS DADOS' na tela do aparelho."
+                            ),
+                            timeout=120,
+                        )
+                    except Exception as exc:
+                        log.debug("ADB restore for %s skipped: %s", pkg, exc)
+                else:
+                    log.debug("Skipping .ab restore for %s — SDK %s", pkg, _device.sdk_version)
 
             if ok:
                 success_count += 1

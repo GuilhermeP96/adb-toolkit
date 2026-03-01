@@ -46,6 +46,8 @@ from .accelerator import (
 from .device_interface import DeviceManager, DevicePlatform, UnifiedDeviceInfo
 from .adb_adapter import ADBAdapter
 from .cross_transfer import CrossPlatformTransferManager, CrossTransferConfig, CrossTransferProgress
+from .agent_manager import AgentManager, AgentState, AgentStatus, AgentProgress, AGENT_HTTP_PORT, DependencyManager, DependencyReport, DepStatus
+from .agent_bridge import AgentBridge
 from .i18n import t, set_language, get_language, available_languages, on_language_change
 
 # Optional iOS support
@@ -54,6 +56,14 @@ try:
     _IOS_AVAILABLE = is_ios_available()
 except Exception:
     _IOS_AVAILABLE = False
+
+# iOS Agent + libimobiledevice support
+try:
+    from .ios_manager import IOSManager, IOSDevice, IOSBackupProgress
+    from .ios_bridge import IOSBridge
+    _IOS_BRIDGE_AVAILABLE = True
+except Exception:
+    _IOS_BRIDGE_AVAILABLE = False
 
 log = logging.getLogger("adb_toolkit.gui")
 
@@ -92,6 +102,17 @@ class ADBToolkitApp(ctk.CTk):
         self.cleanup_mgr = CleanupManager(adb)
         self.toolbox_mgr = ToolboxManager(adb)
         self.driver_mgr = DriverManager(adb.base_dir)
+        self.agent_mgr = AgentManager(adb)
+        self.agent_bridge = AgentBridge(self.agent_mgr)
+        self.dep_mgr = DependencyManager()
+
+        # iOS support (libimobiledevice + agent bridge)
+        if _IOS_BRIDGE_AVAILABLE:
+            self.ios_mgr = IOSManager()
+            self.ios_bridge = IOSBridge(self.ios_mgr)
+        else:
+            self.ios_mgr = None
+            self.ios_bridge = None
 
         # Register device-confirmation overlay callbacks on all managers
         # that may trigger adb backup / adb restore commands
@@ -136,6 +157,8 @@ class ADBToolkitApp(ctk.CTk):
         self._build_ui()
         # Delay monitor start so the UI is fully rendered first
         self.after(1500, self._start_device_monitor)
+        # Check agent dependencies on startup (non-blocking)
+        self.after(2500, self._check_deps_on_startup)
         self._ready = True
 
     # ==================================================================
@@ -155,6 +178,8 @@ class ADBToolkitApp(ctk.CTk):
         self._tab_restore = self.tabview.add(t("tabs.restore"))
         self._tab_transfer = self.tabview.add(t("tabs.transfer"))
         self._tab_drivers = self.tabview.add(t("tabs.drivers"))
+        self._tab_agent = self.tabview.add(t("tabs.agent"))
+        self._tab_ios = self.tabview.add(t("tabs.ios"))
         self._tab_settings = self.tabview.add(t("tabs.settings"))
 
         self._build_devices_tab()
@@ -164,6 +189,8 @@ class ADBToolkitApp(ctk.CTk):
         self._build_restore_tab()
         self._build_transfer_tab()
         self._build_drivers_tab()
+        self._build_agent_tab()
+        self._build_ios_tab()
         self._build_settings_tab()
 
         # Status bar
@@ -2835,6 +2862,1434 @@ class ADBToolkitApp(ctk.CTk):
         self.driver_progress_bar.set(0)
 
     # ==================================================================
+    # AGENT TAB
+    # ==================================================================
+    def _build_agent_tab(self):
+        tab = self._tab_agent
+        self._agent_connected = False
+        self._agent_client = None
+
+        container = ctk.CTkFrame(tab, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=4, pady=4)
+        container.columnconfigure(0, weight=3)
+        container.columnconfigure(1, weight=2)
+        container.rowconfigure(0, weight=1)
+
+        # Left column — controls
+        scroll = ctk.CTkScrollableFrame(container)
+        scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        # Right column — log console
+        right_frame = ctk.CTkFrame(container)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        # ── Header ──
+        hdr = ctk.CTkFrame(scroll)
+        hdr.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            hdr, text=t("agent.title"),
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 2))
+        ctk.CTkLabel(
+            hdr, text=t("agent.subtitle"),
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        # Device selector
+        dev_row = ctk.CTkFrame(hdr, fg_color="transparent")
+        dev_row.pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkLabel(dev_row, text=t("common.device_label")).pack(side="left", padx=(0, 8))
+        self.agent_device_menu = self._build_device_selector(dev_row)
+        self.agent_device_menu.pack(side="left")
+        self._tab_device_menus.append(self.agent_device_menu)
+
+        # ── Dependencies Card ──
+        deps_card = ctk.CTkFrame(scroll)
+        deps_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            deps_card, text=t("agent.deps_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        ctk.CTkLabel(
+            deps_card, text=t("agent.deps_subtitle"),
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        self.agent_deps_text = ctk.CTkTextbox(deps_card, height=120,
+                                               font=ctk.CTkFont(size=11))
+        self.agent_deps_text.pack(fill="x", padx=12, pady=4)
+        self.agent_deps_text.insert("end", t("agent.deps_not_checked"))
+        self.agent_deps_text.configure(state="disabled")
+
+        deps_btns = ctk.CTkFrame(deps_card, fg_color="transparent")
+        deps_btns.pack(fill="x", padx=12, pady=(0, 8))
+
+        self.btn_agent_check_deps = ctk.CTkButton(
+            deps_btns, text=t("agent.btn_check_deps"),
+            width=180, height=36,
+            command=self._agent_check_deps,
+        )
+        self.btn_agent_check_deps.pack(side="left", padx=4)
+
+        self.btn_agent_install_deps = ctk.CTkButton(
+            deps_btns, text=t("agent.btn_install_deps"),
+            fg_color=COLORS["success"], hover_color="#05c090",
+            width=220, height=36,
+            command=self._agent_install_deps,
+        )
+        self.btn_agent_install_deps.pack(side="left", padx=4)
+
+        # ── Status Card ──
+        status_card = ctk.CTkFrame(scroll)
+        status_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            status_card, text=t("agent.status_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        # Status indicator
+        status_row = ctk.CTkFrame(status_card, fg_color="transparent")
+        status_row.pack(fill="x", padx=12, pady=4)
+
+        self.agent_state_label = ctk.CTkLabel(
+            status_row, text=t("agent.state.not_installed"),
+            font=ctk.CTkFont(size=13),
+            text_color=COLORS["text_dim"],
+        )
+        self.agent_state_label.pack(side="left")
+
+        self.btn_agent_check = ctk.CTkButton(
+            status_row, text=t("agent.btn_check"), width=120,
+            command=self._agent_check_status,
+        )
+        self.btn_agent_check.pack(side="right", padx=4)
+
+        # Version info
+        self.agent_version_label = ctk.CTkLabel(
+            status_card, text="",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+        )
+        self.agent_version_label.pack(anchor="w", padx=12, pady=(0, 8))
+
+        # ── Install / Update Card ──
+        install_card = ctk.CTkFrame(scroll)
+        install_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            install_card, text=t("agent.install_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        install_btns = ctk.CTkFrame(install_card, fg_color="transparent")
+        install_btns.pack(fill="x", padx=12, pady=4)
+
+        self.btn_agent_install = ctk.CTkButton(
+            install_btns, text=t("agent.btn_install"),
+            fg_color=COLORS["success"], hover_color="#05c090",
+            width=160, height=40,
+            command=self._agent_install,
+        )
+        self.btn_agent_install.pack(side="left", padx=4)
+
+        self.btn_agent_update = ctk.CTkButton(
+            install_btns, text=t("agent.btn_update"),
+            fg_color=COLORS["warning"], text_color="black",
+            hover_color="#e6bc5a",
+            width=160, height=40,
+            command=self._agent_install,
+        )
+        self.btn_agent_update.pack(side="left", padx=4)
+
+        self.btn_agent_uninstall = ctk.CTkButton(
+            install_btns, text=t("agent.btn_uninstall"),
+            fg_color=COLORS["error"], hover_color="#d43d5f",
+            width=160, height=40,
+            command=self._agent_uninstall,
+        )
+        self.btn_agent_uninstall.pack(side="left", padx=4)
+
+        # Browse for custom APK
+        apk_row = ctk.CTkFrame(install_card, fg_color="transparent")
+        apk_row.pack(fill="x", padx=12, pady=(0, 8))
+
+        self.agent_apk_entry = ctk.CTkEntry(
+            apk_row, placeholder_text=t("agent.apk_placeholder"), width=350,
+        )
+        self.agent_apk_entry.pack(side="left", padx=(0, 4))
+
+        ctk.CTkButton(
+            apk_row, text="📁", width=40,
+            command=self._agent_browse_apk,
+        ).pack(side="left")
+
+        # ── Service Control Card ──
+        svc_card = ctk.CTkFrame(scroll)
+        svc_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            svc_card, text=t("agent.service_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        svc_btns = ctk.CTkFrame(svc_card, fg_color="transparent")
+        svc_btns.pack(fill="x", padx=12, pady=4)
+
+        self.btn_agent_start = ctk.CTkButton(
+            svc_btns, text=t("agent.btn_start"),
+            fg_color=COLORS["success"], hover_color="#05c090",
+            width=140, height=38,
+            command=self._agent_start_service,
+        )
+        self.btn_agent_start.pack(side="left", padx=4)
+
+        self.btn_agent_stop = ctk.CTkButton(
+            svc_btns, text=t("agent.btn_stop"),
+            fg_color=COLORS["error"], hover_color="#d43d5f",
+            width=140, height=38,
+            command=self._agent_stop_service,
+        )
+        self.btn_agent_stop.pack(side="left", padx=4)
+
+        self.btn_agent_launch = ctk.CTkButton(
+            svc_btns, text=t("agent.btn_launch"),
+            width=140, height=38,
+            command=self._agent_launch_app,
+        )
+        self.btn_agent_launch.pack(side="left", padx=4)
+
+        # ── Connection Card ──
+        conn_card = ctk.CTkFrame(scroll)
+        conn_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            conn_card, text=t("agent.connection_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        conn_btns = ctk.CTkFrame(conn_card, fg_color="transparent")
+        conn_btns.pack(fill="x", padx=12, pady=4)
+
+        self.btn_agent_connect = ctk.CTkButton(
+            conn_btns, text=t("agent.btn_connect"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            width=160, height=40,
+            command=self._agent_connect,
+        )
+        self.btn_agent_connect.pack(side="left", padx=4)
+
+        self.btn_agent_disconnect = ctk.CTkButton(
+            conn_btns, text=t("agent.btn_disconnect"),
+            fg_color=COLORS["border"], hover_color="#3d3f5c",
+            width=160, height=40,
+            command=self._agent_disconnect,
+        )
+        self.btn_agent_disconnect.pack(side="left", padx=4)
+
+        self.btn_agent_fullsetup = ctk.CTkButton(
+            conn_btns, text=t("agent.btn_full_setup"),
+            fg_color="#6B21A8", hover_color="#4C1D95",
+            width=200, height=40,
+            command=self._agent_full_setup,
+        )
+        self.btn_agent_fullsetup.pack(side="left", padx=4)
+
+        # Connection info
+        self.agent_conn_info = ctk.CTkLabel(
+            conn_card, text="",
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+        )
+        self.agent_conn_info.pack(anchor="w", padx=12, pady=(0, 4))
+
+        # ── Permissions Card ──
+        perm_card = ctk.CTkFrame(scroll)
+        perm_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            perm_card, text=t("agent.permissions_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        perm_btns = ctk.CTkFrame(perm_card, fg_color="transparent")
+        perm_btns.pack(fill="x", padx=12, pady=(4, 8))
+
+        self.btn_agent_storage_perm = ctk.CTkButton(
+            perm_btns, text=t("agent.btn_manage_storage"),
+            width=200, height=36,
+            command=self._agent_manage_storage,
+        )
+        self.btn_agent_storage_perm.pack(side="left", padx=4)
+
+        self.btn_agent_admin = ctk.CTkButton(
+            perm_btns, text=t("agent.btn_device_admin"),
+            width=200, height=36,
+            command=self._agent_device_admin,
+        )
+        self.btn_agent_admin.pack(side="left", padx=4)
+
+        # ── Build Card (Advanced) ──
+        build_card = ctk.CTkFrame(scroll)
+        build_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            build_card, text=t("agent.build_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        ctk.CTkLabel(
+            build_card, text=t("agent.build_subtitle"),
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        build_btns = ctk.CTkFrame(build_card, fg_color="transparent")
+        build_btns.pack(fill="x", padx=12, pady=(4, 8))
+
+        self.btn_agent_build_debug = ctk.CTkButton(
+            build_btns, text=t("agent.btn_build_debug"),
+            width=160, height=36,
+            command=lambda: self._agent_build(release=False),
+        )
+        self.btn_agent_build_debug.pack(side="left", padx=4)
+
+        self.btn_agent_build_release = ctk.CTkButton(
+            build_btns, text=t("agent.btn_build_release"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            width=160, height=36,
+            command=lambda: self._agent_build(release=True),
+        )
+        self.btn_agent_build_release.pack(side="left", padx=4)
+
+        # ── Progress ──
+        self.agent_progress_label = ctk.CTkLabel(
+            scroll, text="", anchor="w",
+        )
+        self.agent_progress_label.pack(fill="x", padx=12, pady=(8, 2))
+
+        self.agent_progress_bar = ctk.CTkProgressBar(scroll)
+        self.agent_progress_bar.pack(fill="x", padx=12, pady=(0, 8))
+        self.agent_progress_bar.set(0)
+
+        # ── Right panel: Log console ──
+        ctk.CTkLabel(
+            right_frame, text=t("agent.log_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        self.agent_log = ctk.CTkTextbox(right_frame, font=ctk.CTkFont(size=11))
+        self.agent_log.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.agent_log.configure(state="disabled")
+
+        # Register progress callback
+        self.agent_mgr.set_progress_callback(self._agent_on_progress)
+
+    # ------------------------------------------------------------------
+    # Agent tab — callbacks
+    # ------------------------------------------------------------------
+
+    def _agent_serial(self) -> Optional[str]:
+        """Get selected device serial from agent tab selector."""
+        return self._serial_from_selector(self.agent_device_menu)
+
+    def _agent_log_append(self, text: str):
+        """Append text to the agent log console."""
+        try:
+            self.agent_log.configure(state="normal")
+            ts = time.strftime("%H:%M:%S")
+            self.agent_log.insert("end", f"[{ts}] {text}\n")
+            self.agent_log.see("end")
+            self.agent_log.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _agent_on_progress(self, p: AgentProgress):
+        """Update agent progress bar and label from any thread."""
+        def _update():
+            try:
+                self.agent_progress_label.configure(text=p.message)
+                if p.percent > 0:
+                    self.agent_progress_bar.set(p.percent / 100)
+                if p.done:
+                    self.agent_progress_bar.set(1.0)
+                if p.error:
+                    self._agent_log_append(f"❌ {p.error}")
+                elif p.message:
+                    self._agent_log_append(f"{'✅' if p.done else '⏳'} {p.message}")
+            except Exception:
+                pass
+        self.after(0, _update)
+
+    def _agent_update_status_ui(self, status: AgentStatus):
+        """Update the agent tab UI with current status."""
+        state_labels = {
+            AgentState.NOT_INSTALLED: ("🔴 " + t("agent.state.not_installed"), COLORS["error"]),
+            AgentState.INSTALLED_STOPPED: ("🟡 " + t("agent.state.installed_stopped"), COLORS["warning"]),
+            AgentState.INSTALLED_RUNNING: ("🟢 " + t("agent.state.installed_running"), COLORS["success"]),
+            AgentState.CONNECTED: ("🟢 " + t("agent.state.connected"), COLORS["success"]),
+            AgentState.UPDATE_AVAILABLE: ("🔵 " + t("agent.state.update_available"), COLORS["warning"]),
+            AgentState.ERROR: ("🔴 " + t("agent.state.error"), COLORS["error"]),
+        }
+        label, color = state_labels.get(status.state, ("❓ Unknown", COLORS["text_dim"]))
+        self.agent_state_label.configure(text=label, text_color=color)
+
+        version_text = ""
+        if status.installed_version:
+            version_text = t("agent.version_installed", version=status.installed_version)
+        if status.latest_version:
+            version_text += f"  |  {t('agent.version_latest', version=status.latest_version)}"
+        if status.device_model:
+            version_text += f"  |  {status.device_model} (SDK {status.device_sdk})"
+        self.agent_version_label.configure(text=version_text)
+
+    def _agent_check_status(self):
+        """Check agent status on the selected device."""
+        serial = self._agent_serial()
+        if not serial:
+            messagebox.showwarning(t("common.warning"), t("common.select_device_first"))
+            return
+
+        def _task():
+            self._agent_log_append(t("agent.log_checking", serial=serial))
+            status = self.agent_mgr.get_status(serial)
+            self.after(0, lambda: self._agent_update_status_ui(status))
+            self._agent_log_append(t("agent.log_status", state=status.state.value))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _agent_install(self):
+        """Install or update agent on the selected device."""
+        serial = self._agent_serial()
+        if not serial:
+            messagebox.showwarning(t("common.warning"), t("common.select_device_first"))
+            return
+
+        # Check for custom APK path
+        custom_apk = self.agent_apk_entry.get().strip()
+        apk_path = Path(custom_apk) if custom_apk else None
+
+        def _task():
+            self._agent_log_append(t("agent.log_installing"))
+            ok = self.agent_mgr.install(serial, apk_path)
+            if ok:
+                self._agent_log_append(t("agent.log_install_success"))
+                status = self.agent_mgr.get_status(serial)
+                self.after(0, lambda: self._agent_update_status_ui(status))
+            else:
+                self._agent_log_append(t("agent.log_install_fail"))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _agent_uninstall(self):
+        """Uninstall agent from the selected device."""
+        serial = self._agent_serial()
+        if not serial:
+            messagebox.showwarning(t("common.warning"), t("common.select_device_first"))
+            return
+
+        if not messagebox.askyesno(
+            t("common.confirm"),
+            t("agent.confirm_uninstall"),
+        ):
+            return
+
+        def _task():
+            self._agent_log_append(t("agent.log_uninstalling"))
+            ok = self.agent_mgr.uninstall(serial)
+            if ok:
+                self._agent_log_append(t("agent.log_uninstall_success"))
+            status = self.agent_mgr.get_status(serial)
+            self.after(0, lambda: self._agent_update_status_ui(status))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _agent_browse_apk(self):
+        """Open file dialog to select a custom APK."""
+        path = filedialog.askopenfilename(
+            title=t("agent.browse_apk_title"),
+            filetypes=[("APK files", "*.apk"), ("All files", "*.*")],
+        )
+        if path:
+            self.agent_apk_entry.delete(0, "end")
+            self.agent_apk_entry.insert(0, path)
+
+    def _agent_start_service(self):
+        """Start agent service on the selected device."""
+        serial = self._agent_serial()
+        if not serial:
+            messagebox.showwarning(t("common.warning"), t("common.select_device_first"))
+            return
+
+        def _task():
+            self._agent_log_append(t("agent.log_starting"))
+            ok = self.agent_mgr.start_service(serial)
+            msg = t("agent.log_started") if ok else t("agent.log_start_fail")
+            self._agent_log_append(msg)
+            status = self.agent_mgr.get_status(serial)
+            self.after(0, lambda: self._agent_update_status_ui(status))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _agent_stop_service(self):
+        """Stop agent service on the selected device."""
+        serial = self._agent_serial()
+        if not serial:
+            return
+
+        def _task():
+            self._agent_log_append(t("agent.log_stopping"))
+            self.agent_mgr.stop_service(serial)
+            self._agent_log_append(t("agent.log_stopped"))
+            status = self.agent_mgr.get_status(serial)
+            self.after(0, lambda: self._agent_update_status_ui(status))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _agent_launch_app(self):
+        """Launch the agent app on device."""
+        serial = self._agent_serial()
+        if serial:
+            self.agent_mgr.launch_app(serial)
+            self._agent_log_append(t("agent.log_launched"))
+
+    def _agent_connect(self):
+        """Connect to the agent via ADB forwarding."""
+        serial = self._agent_serial()
+        if not serial:
+            messagebox.showwarning(t("common.warning"), t("common.select_device_first"))
+            return
+
+        def _task():
+            self._agent_log_append(t("agent.log_connecting"))
+            client = self.agent_mgr.connect(serial)
+            if client:
+                self._agent_client = client
+                self._agent_connected = True
+                self._agent_log_append(t("agent.log_connected"))
+                self.after(0, lambda: self.agent_conn_info.configure(
+                    text=t("agent.conn_info", port=AGENT_HTTP_PORT),
+                    text_color=COLORS["success"],
+                ))
+            else:
+                self._agent_log_append(t("agent.log_connect_fail"))
+                self.after(0, lambda: self.agent_conn_info.configure(
+                    text=t("agent.conn_fail_info"),
+                    text_color=COLORS["error"],
+                ))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _agent_disconnect(self):
+        """Disconnect from the agent."""
+        serial = self._agent_serial()
+        if serial:
+            self.agent_mgr.disconnect(serial)
+            self._agent_client = None
+            self._agent_connected = False
+            self.agent_conn_info.configure(text="", text_color=COLORS["text_dim"])
+            self._agent_log_append(t("agent.log_disconnected"))
+
+    def _agent_full_setup(self):
+        """Run full setup: install → start → connect."""
+        serial = self._agent_serial()
+        if not serial:
+            messagebox.showwarning(t("common.warning"), t("common.select_device_first"))
+            return
+
+        custom_apk = self.agent_apk_entry.get().strip()
+        apk_path = Path(custom_apk) if custom_apk else None
+
+        def _task():
+            self._agent_log_append(t("agent.log_full_setup"))
+            client = self.agent_mgr.full_setup(serial, apk_path)
+            if client:
+                self._agent_client = client
+                self._agent_connected = True
+                self._agent_log_append(t("agent.log_full_setup_done"))
+                self.after(0, lambda: self.agent_conn_info.configure(
+                    text=t("agent.conn_info", port=AGENT_HTTP_PORT),
+                    text_color=COLORS["success"],
+                ))
+            else:
+                self._agent_log_append(t("agent.log_full_setup_fail"))
+            status = self.agent_mgr.get_status(serial)
+            self.after(0, lambda: self._agent_update_status_ui(status))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _agent_manage_storage(self):
+        """Request MANAGE_EXTERNAL_STORAGE permission."""
+        serial = self._agent_serial()
+        if serial:
+            self.agent_mgr.request_manage_storage(serial)
+            self._agent_log_append(t("agent.log_storage_perm"))
+
+    def _agent_device_admin(self):
+        """Request device admin activation."""
+        serial = self._agent_serial()
+        if serial:
+            self.agent_mgr.enable_device_admin(serial)
+            self._agent_log_append(t("agent.log_device_admin"))
+
+    def _agent_build(self, release: bool = False):
+        """Build the agent APK from source."""
+        # Pre-check build dependencies
+        report = self.dep_mgr.check_all(include_build=True)
+        if report.missing_build:
+            names = ", ".join(d.name for d in report.missing_build)
+            messagebox.showwarning(
+                t("common.warning"),
+                t("agent.deps_build_missing", deps=names),
+            )
+            return
+
+        def _task():
+            mode = "release" if release else "debug"
+            self._agent_log_append(t("agent.log_building", mode=mode))
+            result = self.agent_mgr.build_apk(release=release)
+            if result.success:
+                self._agent_log_append(t("agent.log_build_success", path=str(result.apk_path)))
+            else:
+                self._agent_log_append(t("agent.log_build_fail", error=result.error))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    # ------------------------------------------------------------------
+    # Agent tab — dependency management
+    # ------------------------------------------------------------------
+
+    def _check_deps_on_startup(self):
+        """Check all dependencies on app startup and prompt if any missing."""
+        def _task():
+            report = self.dep_mgr.check_all(include_build=True)
+            if report.has_missing:
+                self.after(0, lambda: self._show_deps_install_dialog(report))
+            else:
+                self.after(0, lambda: self._update_deps_ui(report))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _show_deps_install_dialog(self, report: DependencyReport):
+        """Show ONE confirmation dialog listing ALL missing deps.
+
+        Separates auto-installable from manual-only and lets the user
+        confirm with a single click.
+        """
+        self._update_deps_ui(report)  # always sync the deps card
+
+        auto = report.auto_installable
+        manual = report.manual_only
+
+        if not auto and not manual:
+            return
+
+        # Build message body
+        parts = []
+        if auto:
+            items = "\n".join(f"  • {d.name} — {d.description}" for d in auto)
+            parts.append(t("agent.deps_auto_section", items=items))
+        if manual:
+            items = "\n".join(
+                f"  • {d.name} — {d.description}\n    → {d.install_cmd}"
+                for d in manual
+            )
+            parts.append(t("agent.deps_manual_section", items=items))
+
+        message = "\n\n".join(parts)
+
+        if auto:
+            # Propose automatic install
+            if messagebox.askyesno(
+                t("agent.deps_confirm_title"),
+                t("agent.deps_confirm_install_all", details=message),
+            ):
+                self._agent_install_all_deps()
+        else:
+            # Only manual deps — just inform
+            messagebox.showinfo(
+                t("agent.deps_confirm_title"),
+                t("agent.deps_manual_only", details=message),
+            )
+
+    def _agent_check_deps(self):
+        """Check all agent dependencies and update the UI."""
+        def _task():
+            self.after(0, lambda: self.btn_agent_check_deps.configure(
+                state="disabled", text=t("common.loading"),
+            ))
+            report = self.dep_mgr.check_all(include_build=True)
+            self.after(0, lambda: self._update_deps_ui(report))
+            self.after(0, lambda: self.btn_agent_check_deps.configure(
+                state="normal", text=t("agent.btn_check_deps"),
+            ))
+
+        threading.Thread(target=_task, daemon=True).start()
+
+    def _update_deps_ui(self, report: DependencyReport):
+        """Update the dependency status text box."""
+        lines = []
+
+        lines.append(f"═══ {t('agent.deps_python_header')} ═══")
+        for d in report.python_deps:
+            icon = "✅" if d.installed else "❌"
+            ver = f" (v{d.version})" if d.version and d.version != "installed" else ""
+            auto_tag = "  [auto]" if (not d.installed and d.auto_installable) else ""
+            label = f"  [{d.required_for}]" if not d.installed else ""
+            lines.append(f"{icon} {d.name}{ver}{label}{auto_tag}")
+            if not d.installed:
+                lines.append(f"     → {d.install_cmd}")
+
+        if report.build_deps:
+            lines.append(f"\n═══ {t('agent.deps_build_header')} ═══")
+            for d in report.build_deps:
+                icon = "✅" if d.installed else "⚠️"
+                ver = f" ({d.version})" if d.version else ""
+                auto_tag = "  [auto]" if (not d.installed and d.auto_installable) else ""
+                lines.append(f"{icon} {d.name}{ver}{auto_tag}")
+                if d.description:
+                    lines.append(f"     {d.description}")
+                if not d.installed and d.install_cmd:
+                    lines.append(f"     → {d.install_cmd}")
+
+        # Summary
+        lines.append("")
+        if not report.has_missing:
+            lines.append(f"🎉 {t('agent.deps_all_ok')}")
+        else:
+            n_auto = len(report.auto_installable)
+            n_manual = len(report.manual_only)
+            parts = []
+            if n_auto:
+                parts.append(t("agent.deps_n_auto", count=n_auto))
+            if n_manual:
+                parts.append(t("agent.deps_n_manual", count=n_manual))
+            lines.append(f"⚠️ {' | '.join(parts)}")
+
+        try:
+            self.agent_deps_text.configure(state="normal")
+            self.agent_deps_text.delete("1.0", "end")
+            self.agent_deps_text.insert("end", "\n".join(lines))
+            self.agent_deps_text.configure(state="disabled")
+        except Exception:
+            pass
+
+    def _agent_install_deps(self):
+        """Button callback: install all missing auto-installable deps."""
+        self._agent_install_all_deps()
+
+    def _agent_install_all_deps(self):
+        """
+        Fully automatic dependency installation with real-time progress.
+
+        Runs a single worker thread that calls DependencyManager.install_all_missing()
+        with line-by-line subprocess output streamed to the agent log console.
+        The thread is tracked via .join() and success is verified at the end.
+        """
+        def _task():
+            # ── Lock UI ──
+            self.after(0, lambda: self.btn_agent_install_deps.configure(
+                state="disabled", text=t("common.processing"),
+            ))
+            self.after(0, lambda: self.btn_agent_check_deps.configure(state="disabled"))
+
+            self._agent_log_append(t("agent.log_deps_installing_all"))
+
+            # ── Output callback: stream each line to the log ──
+            def _output_cb(source: str, line: str):
+                self.after(0, lambda s=source, l=line: self._agent_log_append(
+                    f"[{s}] {l}",
+                ))
+
+            # ── Progress callback: update bar + label ──
+            def _progress_cb(msg: str, pct: float):
+                self.after(0, lambda m=msg, p=pct: (
+                    self.agent_progress_label.configure(text=m),
+                    self.agent_progress_bar.set(p / 100),
+                ))
+
+            # ── Run the full install ──
+            all_ok, errors = self.dep_mgr.install_all_missing(
+                output_cb=_output_cb,
+                progress_cb=_progress_cb,
+            )
+
+            # ── Report results ──
+            if all_ok:
+                self._agent_log_append(t("agent.log_deps_all_done"))
+            else:
+                for err in errors:
+                    self._agent_log_append(f"❌ {err}")
+                self._agent_log_append(t("agent.log_deps_some_failed",
+                                         count=len(errors)))
+
+            # ── Re-check and refresh UI ──
+            report = self.dep_mgr.check_all(include_build=True)
+            self.after(0, lambda: self._update_deps_ui(report))
+            self.after(0, lambda: self.btn_agent_install_deps.configure(
+                state="normal", text=t("agent.btn_install_deps"),
+            ))
+            self.after(0, lambda: self.btn_agent_check_deps.configure(
+                state="normal", text=t("agent.btn_check_deps"),
+            ))
+            self.after(0, lambda: self.agent_progress_bar.set(0))
+            self.after(0, lambda: self.agent_progress_label.configure(text=""))
+
+        # Launch worker thread and track it
+        worker = threading.Thread(target=_task, daemon=True, name="dep-installer")
+        worker.start()
+        # Fire a follow-up that joins the thread after it finishes
+        # to catch any unexpected failures
+        def _verify():
+            worker.join(timeout=600)
+            if worker.is_alive():
+                self._agent_log_append("⚠️ Dependency install thread still running after 10 min")
+        threading.Thread(target=_verify, daemon=True, name="dep-verify").start()
+
+    # ==================================================================
+    # iOS TAB  (libimobiledevice + iOS Agent)
+    # ==================================================================
+    def _build_ios_tab(self):
+        tab = self._tab_ios
+
+        container = ctk.CTkFrame(tab, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=4, pady=4)
+        container.columnconfigure(0, weight=3)
+        container.columnconfigure(1, weight=2)
+        container.rowconfigure(0, weight=1)
+
+        # Left — controls
+        scroll = ctk.CTkScrollableFrame(container)
+        scroll.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+
+        # Right — log console
+        right_frame = ctk.CTkFrame(container)
+        right_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        # ── Header ──
+        hdr = ctk.CTkFrame(scroll)
+        hdr.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            hdr, text=t("ios.title"),
+            font=ctk.CTkFont(size=16, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 2))
+        ctk.CTkLabel(
+            hdr, text=t("ios.subtitle"),
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 8))
+
+        # ── Tools Status Card ──
+        tools_card = ctk.CTkFrame(scroll)
+        tools_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            tools_card, text=t("ios.tools_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        ctk.CTkLabel(
+            tools_card, text=t("ios.tools_subtitle"),
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        self.ios_tools_text = ctk.CTkTextbox(tools_card, height=100,
+                                              font=ctk.CTkFont(size=11))
+        self.ios_tools_text.pack(fill="x", padx=12, pady=4)
+        self.ios_tools_text.insert("end", t("ios.tools_not_checked"))
+        self.ios_tools_text.configure(state="disabled")
+
+        tools_btns = ctk.CTkFrame(tools_card, fg_color="transparent")
+        tools_btns.pack(fill="x", padx=12, pady=(0, 8))
+
+        self.btn_ios_check_tools = ctk.CTkButton(
+            tools_btns, text=t("ios.btn_check_tools"),
+            width=180, height=36,
+            command=self._ios_check_tools,
+        )
+        self.btn_ios_check_tools.pack(side="left", padx=4)
+
+        self.btn_ios_install_tools = ctk.CTkButton(
+            tools_btns, text=t("ios.btn_install_tools"),
+            fg_color=COLORS["success"], hover_color="#05c090",
+            width=220, height=36,
+            command=self._ios_install_tools,
+        )
+        self.btn_ios_install_tools.pack(side="left", padx=4)
+
+        # ── Device Detection Card ──
+        detect_card = ctk.CTkFrame(scroll)
+        detect_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            detect_card, text=t("ios.detect_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        detect_row = ctk.CTkFrame(detect_card, fg_color="transparent")
+        detect_row.pack(fill="x", padx=12, pady=4)
+
+        self.btn_ios_detect = ctk.CTkButton(
+            detect_row, text=t("ios.btn_detect"),
+            width=180, height=36,
+            command=self._ios_detect_devices,
+        )
+        self.btn_ios_detect.pack(side="left", padx=4)
+
+        self.btn_ios_pair = ctk.CTkButton(
+            detect_row, text=t("ios.btn_pair"),
+            fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"],
+            width=160, height=36,
+            command=self._ios_pair_device,
+        )
+        self.btn_ios_pair.pack(side="left", padx=4)
+
+        # Device selector
+        self.ios_device_var = ctk.StringVar(value=t("ios.no_device"))
+        self.ios_device_menu = ctk.CTkOptionMenu(
+            detect_card, variable=self.ios_device_var,
+            values=[t("ios.no_device")],
+            width=400,
+        )
+        self.ios_device_menu.pack(fill="x", padx=12, pady=(0, 4))
+
+        # Device info text
+        self.ios_device_info_text = ctk.CTkTextbox(detect_card, height=80,
+                                                    font=ctk.CTkFont(size=11))
+        self.ios_device_info_text.pack(fill="x", padx=12, pady=(0, 8))
+        self.ios_device_info_text.configure(state="disabled")
+
+        # ── Agent Connection Card ──
+        agent_card = ctk.CTkFrame(scroll)
+        agent_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            agent_card, text=t("ios.agent_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        ctk.CTkLabel(
+            agent_card, text=t("ios.agent_subtitle"),
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        agent_conn_row = ctk.CTkFrame(agent_card, fg_color="transparent")
+        agent_conn_row.pack(fill="x", padx=12, pady=4)
+
+        ctk.CTkLabel(agent_conn_row, text="IP:").pack(side="left")
+        self.ios_agent_ip = ctk.CTkEntry(agent_conn_row, width=160,
+                                          placeholder_text="192.168.1.x")
+        self.ios_agent_ip.pack(side="left", padx=4)
+        ctk.CTkLabel(agent_conn_row, text=t("ios.token_label")).pack(side="left", padx=(8, 0))
+        self.ios_agent_token = ctk.CTkEntry(agent_conn_row, width=200,
+                                             placeholder_text="xxxxxxxx")
+        self.ios_agent_token.pack(side="left", padx=4)
+
+        self.btn_ios_agent_connect = ctk.CTkButton(
+            agent_conn_row, text=t("ios.btn_agent_connect"),
+            fg_color=COLORS["success"], hover_color="#05c090",
+            width=120, height=36,
+            command=self._ios_connect_agent,
+        )
+        self.btn_ios_agent_connect.pack(side="left", padx=4)
+
+        self.ios_agent_status_label = ctk.CTkLabel(
+            agent_card, text=t("ios.agent_disconnected"),
+            font=ctk.CTkFont(size=12), text_color=COLORS["text_dim"],
+        )
+        self.ios_agent_status_label.pack(anchor="w", padx=12, pady=(0, 8))
+
+        # ── Backup / Restore Card ──
+        backup_card = ctk.CTkFrame(scroll)
+        backup_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            backup_card, text=t("ios.backup_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+        ctk.CTkLabel(
+            backup_card, text=t("ios.backup_subtitle"),
+            font=ctk.CTkFont(size=11), text_color=COLORS["text_dim"],
+        ).pack(anchor="w", padx=12, pady=(0, 4))
+
+        backup_dir_row = ctk.CTkFrame(backup_card, fg_color="transparent")
+        backup_dir_row.pack(fill="x", padx=12, pady=4)
+
+        self.ios_backup_dir_entry = ctk.CTkEntry(
+            backup_dir_row, placeholder_text=t("ios.backup_dir_placeholder"),
+            width=350,
+        )
+        self.ios_backup_dir_entry.pack(side="left", padx=(0, 4))
+        ctk.CTkButton(
+            backup_dir_row, text="📁", width=40,
+            command=self._ios_browse_backup_dir,
+        ).pack(side="left")
+
+        self.ios_encrypt_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            backup_card, text=t("ios.encrypt_backup"),
+            variable=self.ios_encrypt_var,
+        ).pack(anchor="w", padx=12, pady=4)
+
+        backup_btns = ctk.CTkFrame(backup_card, fg_color="transparent")
+        backup_btns.pack(fill="x", padx=12, pady=(0, 4))
+
+        self.btn_ios_backup = ctk.CTkButton(
+            backup_btns, text=t("ios.btn_backup"),
+            fg_color=COLORS["success"], hover_color="#05c090",
+            width=160, height=40,
+            command=self._ios_start_backup,
+        )
+        self.btn_ios_backup.pack(side="left", padx=4)
+
+        self.btn_ios_restore = ctk.CTkButton(
+            backup_btns, text=t("ios.btn_restore"),
+            fg_color=COLORS["warning"], text_color="black",
+            hover_color="#e6bc5a",
+            width=160, height=40,
+            command=self._ios_start_restore,
+        )
+        self.btn_ios_restore.pack(side="left", padx=4)
+
+        # Progress bar
+        self.ios_backup_progress = ctk.CTkProgressBar(backup_card, width=400)
+        self.ios_backup_progress.pack(fill="x", padx=12, pady=4)
+        self.ios_backup_progress.set(0)
+
+        self.ios_backup_status = ctk.CTkLabel(
+            backup_card, text="", font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+        )
+        self.ios_backup_status.pack(anchor="w", padx=12, pady=(0, 8))
+
+        # ── Apps Card ──
+        apps_card = ctk.CTkFrame(scroll)
+        apps_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            apps_card, text=t("ios.apps_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        apps_btns = ctk.CTkFrame(apps_card, fg_color="transparent")
+        apps_btns.pack(fill="x", padx=12, pady=4)
+
+        self.btn_ios_list_apps = ctk.CTkButton(
+            apps_btns, text=t("ios.btn_list_apps"),
+            width=160, height=36,
+            command=self._ios_list_apps,
+        )
+        self.btn_ios_list_apps.pack(side="left", padx=4)
+
+        self.btn_ios_install_ipa = ctk.CTkButton(
+            apps_btns, text=t("ios.btn_install_ipa"),
+            fg_color=COLORS["success"], hover_color="#05c090",
+            width=160, height=36,
+            command=self._ios_install_ipa,
+        )
+        self.btn_ios_install_ipa.pack(side="left", padx=4)
+
+        self.btn_ios_screenshot = ctk.CTkButton(
+            apps_btns, text=t("ios.btn_screenshot"),
+            width=140, height=36,
+            command=self._ios_screenshot,
+        )
+        self.btn_ios_screenshot.pack(side="left", padx=4)
+
+        self.ios_apps_text = ctk.CTkTextbox(apps_card, height=100,
+                                             font=ctk.CTkFont(size=11))
+        self.ios_apps_text.pack(fill="x", padx=12, pady=(0, 8))
+        self.ios_apps_text.configure(state="disabled")
+
+        # ── Capabilities Card ──
+        cap_card = ctk.CTkFrame(scroll)
+        cap_card.pack(fill="x", padx=4, pady=4)
+        ctk.CTkLabel(
+            cap_card, text=t("ios.capabilities_title"),
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(12, 4))
+
+        self.ios_capabilities_text = ctk.CTkTextbox(cap_card, height=120,
+                                                     font=ctk.CTkFont(size=11))
+        self.ios_capabilities_text.pack(fill="x", padx=12, pady=(0, 8))
+        self.ios_capabilities_text.configure(state="disabled")
+
+        # ── Right column: log console ──
+        ctk.CTkLabel(
+            right_frame, text=t("ios.log_title"),
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(8, 4))
+
+        self.ios_log_text = ctk.CTkTextbox(right_frame, font=ctk.CTkFont(size=11, family="Consolas"))
+        self.ios_log_text.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.ios_log_text.configure(state="disabled")
+
+        # Internal state
+        self._ios_devices: list = []
+        self._ios_syslog_proc = None
+
+    # ------------------------------------------------------------------
+    # iOS event handlers
+    # ------------------------------------------------------------------
+    def _ios_log_append(self, text: str):
+        """Append a line to the iOS log console (thread-safe)."""
+        def _do():
+            self.ios_log_text.configure(state="normal")
+            self.ios_log_text.insert("end", text + "\n")
+            self.ios_log_text.see("end")
+            self.ios_log_text.configure(state="disabled")
+        if threading.current_thread() is threading.main_thread():
+            _do()
+        else:
+            self.after(0, _do)
+
+    def _ios_output_cb(self, source: str, line: str):
+        self._ios_log_append(f"[{source}] {line}")
+
+    def _ios_check_tools(self):
+        """Check which libimobiledevice tools are available."""
+        if not self.ios_mgr:
+            self._ios_log_append(t("ios.bridge_not_available"))
+            return
+
+        def _worker():
+            tools = self.ios_mgr.check_tools()
+            lines = []
+            for tool, available in tools.items():
+                status = "✅" if available else "❌"
+                lines.append(f"  {status}  {tool}")
+
+            available_count = sum(1 for v in tools.values() if v)
+            total = len(tools)
+            header = f"{t('ios.tools_found')}: {available_count}/{total}\n"
+            result = header + "\n".join(lines)
+
+            def _update():
+                self.ios_tools_text.configure(state="normal")
+                self.ios_tools_text.delete("1.0", "end")
+                self.ios_tools_text.insert("end", result)
+                self.ios_tools_text.configure(state="disabled")
+            self.after(0, _update)
+            self._ios_log_append(f"Tool check: {available_count}/{total} available")
+
+        threading.Thread(target=_worker, daemon=True, name="ios-check-tools").start()
+
+    def _ios_install_tools(self):
+        """Auto-install libimobiledevice tools."""
+        if not self.ios_mgr:
+            return
+
+        def _worker():
+            self._ios_log_append(t("ios.installing_tools"))
+            ok, msg = self.ios_mgr.install_tools(output_cb=self._ios_output_cb)
+            if ok:
+                self._ios_log_append(f"✅ {t('ios.tools_installed')}")
+                self.after(500, self._ios_check_tools)
+            else:
+                self._ios_log_append(f"❌ {t('ios.tools_install_failed')}: {msg}")
+
+        threading.Thread(target=_worker, daemon=True, name="ios-install-tools").start()
+
+    def _ios_detect_devices(self):
+        """Detect connected iOS devices."""
+        if not self.ios_bridge:
+            self._ios_log_append(t("ios.bridge_not_available"))
+            return
+
+        def _worker():
+            self._ios_log_append(t("ios.detecting"))
+            devices = self.ios_bridge.list_devices()
+            self._ios_devices = devices
+
+            if not devices:
+                self._ios_log_append(t("ios.no_devices_found"))
+                self.after(0, lambda: self.ios_device_var.set(t("ios.no_device")))
+                return
+
+            labels = []
+            for d in devices:
+                name = d.name or d.model or d.udid[:12]
+                label = f"{name} ({d.ios_version}) [{d.connection_type}]"
+                labels.append(label)
+                self._ios_log_append(f"  📱 {label}")
+
+            def _update():
+                self.ios_device_menu.configure(values=labels)
+                self.ios_device_var.set(labels[0])
+                self._ios_show_device_info(0)
+            self.after(0, _update)
+
+            self._ios_log_append(f"{t('ios.devices_found')}: {len(devices)}")
+
+        threading.Thread(target=_worker, daemon=True, name="ios-detect").start()
+
+    def _ios_get_selected_udid(self) -> Optional[str]:
+        """Get the UDID of the currently selected iOS device."""
+        if not self._ios_devices:
+            return None
+        current = self.ios_device_var.get()
+        for i, d in enumerate(self._ios_devices):
+            name = d.name or d.model or d.udid[:12]
+            label = f"{name} ({d.ios_version}) [{d.connection_type}]"
+            if label == current:
+                return d.udid
+        return self._ios_devices[0].udid if self._ios_devices else None
+
+    def _ios_show_device_info(self, idx: int):
+        """Show device info for the selected device."""
+        if idx >= len(self._ios_devices):
+            return
+        dev = self._ios_devices[idx]
+
+        info_lines = [
+            f"UDID: {dev.udid}",
+            f"Name: {dev.name}",
+            f"Model: {dev.model}",
+            f"iOS: {dev.ios_version}",
+            f"Serial: {dev.serial}",
+            f"Connection: {dev.connection_type}",
+            f"Paired: {'Yes' if dev.is_paired else 'No'}",
+        ]
+
+        def _update():
+            self.ios_device_info_text.configure(state="normal")
+            self.ios_device_info_text.delete("1.0", "end")
+            self.ios_device_info_text.insert("end", "\n".join(info_lines))
+            self.ios_device_info_text.configure(state="disabled")
+        self.after(0, _update)
+
+    def _ios_pair_device(self):
+        """Pair with the selected iOS device."""
+        udid = self._ios_get_selected_udid()
+        if not udid or not self.ios_bridge:
+            self._ios_log_append(t("ios.select_device_first"))
+            return
+
+        def _worker():
+            self._ios_log_append(t("ios.pairing"))
+            ok, msg = self.ios_mgr.pair_device(udid, output_cb=self._ios_output_cb)
+            if ok:
+                self._ios_log_append(f"✅ {t('ios.paired_ok')}")
+            else:
+                self._ios_log_append(f"❌ {t('ios.pair_failed')}: {msg}")
+
+        threading.Thread(target=_worker, daemon=True, name="ios-pair").start()
+
+    def _ios_connect_agent(self):
+        """Connect to the iOS Agent app via WiFi."""
+        if not self.ios_bridge:
+            return
+
+        udid = self._ios_get_selected_udid()
+        if not udid:
+            # Use a placeholder UDID for WiFi-only connections
+            udid = "wifi-device"
+
+        ip = self.ios_agent_ip.get().strip()
+        token = self.ios_agent_token.get().strip()
+        if not ip:
+            self._ios_log_append(t("ios.enter_ip"))
+            return
+
+        def _worker():
+            self._ios_log_append(f"Connecting to iOS Agent at {ip}...")
+            ok = self.ios_bridge.connect_agent(udid, ip, port=15555, token=token)
+            if ok:
+                self._ios_log_append(f"✅ {t('ios.agent_connected')}")
+                self.after(0, lambda: self.ios_agent_status_label.configure(
+                    text=t("ios.agent_connected"), text_color=COLORS["success"],
+                ))
+                # Show capabilities
+                self._ios_show_capabilities(udid)
+            else:
+                self._ios_log_append(f"❌ {t('ios.agent_connect_failed')}")
+                self.after(0, lambda: self.ios_agent_status_label.configure(
+                    text=t("ios.agent_disconnected"), text_color=COLORS["text_dim"],
+                ))
+
+        threading.Thread(target=_worker, daemon=True, name="ios-agent-connect").start()
+
+    def _ios_show_capabilities(self, udid: str):
+        """Show available capabilities for the selected device."""
+        if not self.ios_bridge:
+            return
+
+        caps = self.ios_bridge.capabilities(udid)
+        lines = []
+        lines.append(f"── {t('ios.agent_caps')} ──")
+        for cap, avail in caps.get("agent", {}).items():
+            lines.append(f"  {'✅' if avail else '❌'}  {cap}")
+        lines.append(f"\n── {t('ios.libimobile_caps')} ──")
+        for cap, avail in caps.get("libimobiledevice", {}).items():
+            lines.append(f"  {'✅' if avail else '❌'}  {cap}")
+
+        def _update():
+            self.ios_capabilities_text.configure(state="normal")
+            self.ios_capabilities_text.delete("1.0", "end")
+            self.ios_capabilities_text.insert("end", "\n".join(lines))
+            self.ios_capabilities_text.configure(state="disabled")
+        self.after(0, _update)
+
+    def _ios_browse_backup_dir(self):
+        """Browse for backup directory."""
+        d = filedialog.askdirectory(title=t("ios.select_backup_dir"))
+        if d:
+            self.ios_backup_dir_entry.delete(0, "end")
+            self.ios_backup_dir_entry.insert(0, d)
+
+    def _ios_start_backup(self):
+        """Start iOS backup using libimobiledevice."""
+        udid = self._ios_get_selected_udid()
+        if not udid or not self.ios_bridge:
+            self._ios_log_append(t("ios.select_device_first"))
+            return
+
+        backup_dir = self.ios_backup_dir_entry.get().strip()
+        if not backup_dir:
+            backup_dir = str(self.adb.base_dir / "ios_backups" / udid)
+            self.ios_backup_dir_entry.delete(0, "end")
+            self.ios_backup_dir_entry.insert(0, backup_dir)
+
+        encrypted = self.ios_encrypt_var.get()
+
+        def _progress_cb(p):
+            def _upd():
+                self.ios_backup_progress.set(p.percent / 100.0)
+                status = f"{p.phase}: {p.files_done}/{p.files_total}" if p.files_total else p.message
+                self.ios_backup_status.configure(text=status)
+            self.after(0, _upd)
+
+        def _worker():
+            self._ios_log_append(f"Starting backup to {backup_dir}...")
+            self.after(0, lambda: self.btn_ios_backup.configure(state="disabled"))
+
+            ok, msg = self.ios_bridge.backup(
+                udid, Path(backup_dir),
+                encrypted=encrypted,
+                output_cb=self._ios_output_cb,
+                progress_cb=_progress_cb,
+            )
+
+            if ok:
+                self._ios_log_append(f"✅ {t('ios.backup_complete')}")
+                self.after(0, lambda: self.ios_backup_status.configure(text=t("ios.backup_complete")))
+            else:
+                self._ios_log_append(f"❌ {t('ios.backup_failed')}: {msg}")
+                self.after(0, lambda: self.ios_backup_status.configure(text=f"{t('ios.backup_failed')}: {msg}"))
+
+            self.after(0, lambda: self.btn_ios_backup.configure(state="normal"))
+
+        threading.Thread(target=_worker, daemon=True, name="ios-backup").start()
+
+    def _ios_start_restore(self):
+        """Restore iOS backup."""
+        udid = self._ios_get_selected_udid()
+        if not udid or not self.ios_bridge:
+            self._ios_log_append(t("ios.select_device_first"))
+            return
+
+        backup_dir = self.ios_backup_dir_entry.get().strip()
+        if not backup_dir or not Path(backup_dir).is_dir():
+            self._ios_log_append(t("ios.select_backup_dir"))
+            return
+
+        confirm = messagebox.askyesno(
+            t("ios.restore_confirm_title"),
+            t("ios.restore_confirm_msg"),
+        )
+        if not confirm:
+            return
+
+        def _progress_cb(p):
+            def _upd():
+                self.ios_backup_progress.set(p.percent / 100.0)
+                self.ios_backup_status.configure(text=p.message)
+            self.after(0, _upd)
+
+        def _worker():
+            self._ios_log_append(f"Restoring from {backup_dir}...")
+            self.after(0, lambda: self.btn_ios_restore.configure(state="disabled"))
+
+            ok, msg = self.ios_bridge.restore(
+                udid, Path(backup_dir),
+                output_cb=self._ios_output_cb,
+                progress_cb=_progress_cb,
+            )
+
+            if ok:
+                self._ios_log_append(f"✅ {t('ios.restore_complete')}")
+            else:
+                self._ios_log_append(f"❌ {t('ios.restore_failed')}: {msg}")
+
+            self.after(0, lambda: self.btn_ios_restore.configure(state="normal"))
+
+        threading.Thread(target=_worker, daemon=True, name="ios-restore").start()
+
+    def _ios_list_apps(self):
+        """List installed apps on the iOS device."""
+        udid = self._ios_get_selected_udid()
+        if not udid or not self.ios_bridge:
+            self._ios_log_append(t("ios.select_device_first"))
+            return
+
+        def _worker():
+            self._ios_log_append(t("ios.listing_apps"))
+            apps = self.ios_bridge.list_apps(udid)
+
+            if not apps:
+                self._ios_log_append(t("ios.no_apps_found"))
+                return
+
+            lines = []
+            for app in apps:
+                lines.append(f"  {app.name or app.bundle_id}  v{app.version}  [{app.bundle_id}]")
+
+            def _update():
+                self.ios_apps_text.configure(state="normal")
+                self.ios_apps_text.delete("1.0", "end")
+                self.ios_apps_text.insert("end", "\n".join(lines))
+                self.ios_apps_text.configure(state="disabled")
+            self.after(0, _update)
+
+            self._ios_log_append(f"{t('ios.apps_found')}: {len(apps)}")
+
+        threading.Thread(target=_worker, daemon=True, name="ios-list-apps").start()
+
+    def _ios_install_ipa(self):
+        """Sideload an .ipa file."""
+        udid = self._ios_get_selected_udid()
+        if not udid or not self.ios_bridge:
+            self._ios_log_append(t("ios.select_device_first"))
+            return
+
+        ipa_path = filedialog.askopenfilename(
+            title=t("ios.select_ipa"),
+            filetypes=[("IPA files", "*.ipa"), ("All files", "*.*")],
+        )
+        if not ipa_path:
+            return
+
+        def _worker():
+            self._ios_log_append(f"Installing {Path(ipa_path).name}...")
+            ok, msg = self.ios_bridge.install_ipa(
+                udid, Path(ipa_path),
+                output_cb=self._ios_output_cb,
+            )
+            if ok:
+                self._ios_log_append(f"✅ {t('ios.ipa_installed')}")
+            else:
+                self._ios_log_append(f"❌ {t('ios.ipa_install_failed')}: {msg}")
+
+        threading.Thread(target=_worker, daemon=True, name="ios-install-ipa").start()
+
+    def _ios_screenshot(self):
+        """Take a screenshot of the iOS device."""
+        udid = self._ios_get_selected_udid()
+        if not udid or not self.ios_bridge:
+            self._ios_log_append(t("ios.select_device_first"))
+            return
+
+        dest = filedialog.asksaveasfilename(
+            title=t("ios.save_screenshot"),
+            defaultextension=".png",
+            filetypes=[("PNG", "*.png"), ("TIFF", "*.tiff")],
+        )
+        if not dest:
+            return
+
+        def _worker():
+            self._ios_log_append("Taking screenshot...")
+            ok = self.ios_bridge.screenshot(udid, Path(dest))
+            if ok:
+                self._ios_log_append(f"✅ Screenshot saved to {dest}")
+            else:
+                self._ios_log_append(f"❌ {t('ios.screenshot_failed')}")
+
+        threading.Thread(target=_worker, daemon=True, name="ios-screenshot").start()
+
+    # ==================================================================
     # SETTINGS TAB
     # ==================================================================
     def _build_settings_tab(self):
@@ -3296,13 +4751,28 @@ class ADBToolkitApp(ctk.CTk):
             log.debug("Unified device scan: %s", exc)
             self.unified_devices = {}
 
-        # Count total (Android + iOS)
+        # Discover direct-protocol (WiFi) agent devices
+        direct_devices: dict = {}
+        try:
+            if hasattr(self, "agent_mgr") and self.agent_mgr:
+                direct_devices = self.agent_mgr.get_direct_devices()
+        except Exception as exc:
+            log.debug("Direct device scan: %s", exc)
+
+        # Count total (Android + iOS + Direct-only)
         android_count = len(self.devices)
         ios_count = sum(
             1 for d in self.unified_devices.values()
             if d.platform == DevicePlatform.IOS
         )
-        total_count = android_count + ios_count
+        # Direct devices not already present via ADB
+        adb_serials = set(self.devices.keys())
+        direct_only = {
+            did: dd for did, dd in direct_devices.items()
+            if did not in adb_serials
+        }
+        direct_count = len(direct_only)
+        total_count = android_count + ios_count + direct_count
 
         # Update top bar
         if total_count == 0:
@@ -3322,6 +4792,8 @@ class ADBToolkitApp(ctk.CTk):
             parts = []
             if android_count:
                 parts.append(f"🤖{android_count}")
+            if direct_count:
+                parts.append(f"📡{direct_count}")
             if ios_count:
                 parts.append(f"🍎{ios_count}")
             self.lbl_connection.configure(
@@ -3333,7 +4805,7 @@ class ADBToolkitApp(ctk.CTk):
         for w in self.device_list_frame.winfo_children():
             w.destroy()
 
-        if not self.devices and not ios_count:
+        if not self.devices and not ios_count and not direct_count:
             self.lbl_no_devices = ctk.CTkLabel(
                 self.device_list_frame,
                 text=t("devices.no_device_instructions_ios"),
@@ -3343,9 +4815,12 @@ class ADBToolkitApp(ctk.CTk):
             )
             self.lbl_no_devices.pack(expand=True, pady=40)
         else:
-            # Android devices
+            # Android devices (ADB)
             for serial, dev in self.devices.items():
                 self._create_device_card(serial, dev)
+            # Direct-protocol-only devices (WiFi agent)
+            for did, dd in direct_only.items():
+                self._create_direct_device_card(did, dd)
             # iOS devices
             for serial, udev in self.unified_devices.items():
                 if udev.platform == DevicePlatform.IOS:
@@ -3399,6 +4874,15 @@ class ADBToolkitApp(ctk.CTk):
             w.destroy()
         for serial, dev in self.devices.items():
             self._create_device_card(serial, dev)
+        # Direct-protocol-only devices
+        try:
+            if hasattr(self, "agent_mgr") and self.agent_mgr:
+                adb_serials = set(self.devices.keys())
+                for did, dd in self.agent_mgr.get_direct_devices().items():
+                    if did not in adb_serials:
+                        self._create_direct_device_card(did, dd)
+        except Exception:
+            pass
         for serial, udev in self.unified_devices.items():
             if udev.platform == DevicePlatform.IOS:
                 self._create_ios_device_card(serial, udev)
@@ -3429,6 +4913,29 @@ class ADBToolkitApp(ctk.CTk):
             text_color=state_color,
             font=ctk.CTkFont(size=12),
         ).pack(side="left")
+
+        # Show protocol indicator (ADB + WiFi Direct if registered)
+        protocol_text = "USB/ADB"
+        try:
+            if hasattr(self, "agent_mgr") and self.agent_mgr:
+                proto = self.agent_mgr.get_connection_protocol(serial)
+                if proto.value == "direct":
+                    protocol_text = "WiFi Direct"
+                else:
+                    # Check if this device also has a direct registration
+                    directs = self.agent_mgr.get_direct_devices()
+                    for dd in directs.values():
+                        if dd.label and dd.label in name:
+                            protocol_text = "USB/ADB + 📡WiFi"
+                            break
+        except Exception:
+            pass
+
+        ctk.CTkLabel(
+            top, text=f"  {protocol_text}",
+            text_color=COLORS.get("info", "#5dade2"),
+            font=ctk.CTkFont(size=10),
+        ).pack(side="left", padx=(4, 0))
 
         ctk.CTkLabel(
             top, text=serial,
@@ -3486,6 +4993,135 @@ class ADBToolkitApp(ctk.CTk):
             fg_color="#7b2cbf", hover_color="#9d4edd",
             command=lambda s=serial: self._open_cache_manager(s),
         ).pack(side="left", padx=4)
+
+    def _create_direct_device_card(self, device_id: str, dd):
+        """Create a card widget for a direct-protocol (WiFi) agent device."""
+        card = ctk.CTkFrame(self.device_list_frame, corner_radius=8)
+        card.pack(fill="x", padx=4, pady=4)
+
+        name = dd.label or dd.model or dd.ip
+
+        # ---- Row 1: Name + protocol badge + IP ----
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=8, pady=(8, 2))
+
+        ctk.CTkLabel(
+            top, text=f"📡 {name}",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            top, text="  [WiFi Direct]",
+            text_color=COLORS.get("info", "#5dade2"),
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            top, text=f"{dd.ip}:{dd.http_port}",
+            text_color=COLORS["text_dim"],
+            font=ctk.CTkFont(size=11),
+        ).pack(side="right")
+
+        # ---- Row 2: Details ----
+        info_row = ctk.CTkFrame(card, fg_color="transparent")
+        info_row.pack(fill="x", padx=8, pady=(0, 4))
+
+        details_parts: list = []
+        if dd.model:
+            details_parts.append(dd.model)
+        if dd.android_version:
+            details_parts.append(f"Android {dd.android_version}")
+        details_parts.append(f"ID: {device_id[:20]}")
+        if dd.last_seen:
+            import datetime
+            ago = time.time() - dd.last_seen
+            if ago < 60:
+                details_parts.append("visto agora")
+            elif ago < 3600:
+                details_parts.append(f"visto há {int(ago/60)}min")
+            else:
+                details_parts.append(f"visto há {int(ago/3600)}h")
+
+        ctk.CTkLabel(
+            info_row,
+            text="  •  ".join(details_parts),
+            font=ctk.CTkFont(size=11),
+            text_color=COLORS["text_dim"],
+        ).pack(side="left")
+
+        # ---- Row 3: Buttons ----
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=8, pady=(0, 8))
+
+        ctk.CTkButton(
+            btn_row, text="🔗 Conectar", width=110,
+            fg_color=COLORS.get("info", "#5dade2"),
+            command=lambda did=device_id: self._connect_direct_device(did),
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            btn_row, text="🔍 Ping", width=80,
+            command=lambda did=device_id: self._ping_direct_device(did),
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            btn_row, text="🗑️ Esquecer", width=100,
+            fg_color=COLORS.get("error", "#e74c3c"),
+            command=lambda did=device_id: self._forget_direct_device(did),
+        ).pack(side="left", padx=4)
+
+    def _connect_direct_device(self, device_id: str):
+        """Attempt to connect to a direct-protocol device."""
+        if not hasattr(self, "agent_mgr") or not self.agent_mgr:
+            return
+        dd = self.agent_mgr.get_direct_devices().get(device_id)
+        if not dd:
+            return
+
+        def _do():
+            client = self.agent_mgr.connect_direct(
+                ip=dd.ip, token=dd.token, port=dd.http_port, label=dd.label
+            )
+            if client:
+                self._safe_after(0, lambda: self._show_status(
+                    f"Conectado via WiFi a {dd.label} ({dd.ip})", "success"
+                ))
+            else:
+                self._safe_after(0, lambda: self._show_status(
+                    f"Falha ao conectar a {dd.ip}", "error"
+                ))
+            self._safe_after(100, self._refresh_devices)
+
+        import threading
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _ping_direct_device(self, device_id: str):
+        """Ping a direct-protocol device and show result."""
+        if not hasattr(self, "agent_mgr") or not self.agent_mgr:
+            return
+
+        def _do():
+            ok = self.agent_mgr.ping_direct_device(device_id)
+            dd = self.agent_mgr.get_direct_devices().get(device_id)
+            label = dd.label if dd else device_id
+            if ok:
+                self._safe_after(0, lambda: self._show_status(
+                    f"✅ {label} acessível via WiFi", "success"
+                ))
+            else:
+                self._safe_after(0, lambda: self._show_status(
+                    f"❌ {label} inacessível", "error"
+                ))
+
+        import threading
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _forget_direct_device(self, device_id: str):
+        """Remove a direct-protocol device from the store."""
+        if not hasattr(self, "agent_mgr") or not self.agent_mgr:
+            return
+        self.agent_mgr.remove_direct_device(device_id)
+        self._refresh_devices()
 
     def _create_ios_device_card(self, serial: str, dev: UnifiedDeviceInfo):
         """Create a card widget for an iOS device."""

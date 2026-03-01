@@ -1,0 +1,38 @@
+[
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/activity_main.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/activity_main.xml"
+    },
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/fragment_apps.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/fragment_apps.xml"
+    },
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/fragment_terminal.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/fragment_terminal.xml"
+    },
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/fragment_files.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/fragment_files.xml"
+    },
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/fragment_dashboard.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/fragment_dashboard.xml"
+    },
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/fragment_settings.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/fragment_settings.xml"
+    },
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/activity_main_nav.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/activity_main_nav.xml"
+    },
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/item_file.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/item_file.xml"
+    },
+    {
+        "merged": "com.adbtoolkit.agent.app-mergeDebugResources-41:/layout/item_app.xml",
+        "source": "com.adbtoolkit.agent.app-main-44:/layout/item_app.xml"
+    }
+]

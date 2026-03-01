@@ -1,0 +1,334 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="com.adbtoolkit.agent"
+4    android:versionCode="1"
+5    android:versionName="1.0.0" >
+6
+7    <uses-sdk
+8        android:minSdkVersion="26"
+9        android:targetSdkVersion="35" />
+10
+11    <!-- ═══════════════════════════════════════════════════════════════ -->
+12    <!-- PERMISSIONS -->
+13    <!-- ═══════════════════════════════════════════════════════════════ -->
+14
+15
+16    <!-- Full file access (Android 11+) -->
+17    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+17-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:10:5-11:40
+17-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:10:22-79
+18    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+18-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:12:5-80
+18-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:12:22-77
+19    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+19-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:13:5-81
+19-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:13:22-78
+20
+21    <!-- Contacts -->
+22    <uses-permission android:name="android.permission.READ_CONTACTS" />
+22-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:16:5-72
+22-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:16:22-69
+23    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
+23-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:17:5-73
+23-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:17:22-70
+24
+25    <!-- SMS / Call log -->
+26    <uses-permission android:name="android.permission.READ_SMS" />
+26-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:20:5-67
+26-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:20:22-64
+27    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+27-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:21:5-72
+27-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:21:22-69
+28
+29    <!-- App usage stats -->
+30    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+30-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:24:5-25:47
+30-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:24:22-75
+31
+32    <!-- Network (for HTTP/TCP servers) -->
+33    <uses-permission android:name="android.permission.INTERNET" />
+33-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:28:5-67
+33-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:28:22-64
+34    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+34-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:29:5-79
+34-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:29:22-76
+35    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+35-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:30:5-76
+35-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:30:22-73
+36
+37    <!-- Foreground service -->
+38    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+38-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:33:5-77
+38-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:33:22-74
+39    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+39-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:34:5-89
+39-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:34:22-86
+40    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+40-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:35:5-77
+40-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:35:22-74
+41    <uses-permission android:name="android.permission.WAKE_LOCK" />
+41-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:36:5-68
+41-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:36:22-65
+42
+43    <!-- Install / uninstall packages -->
+44    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+44-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:39:5-83
+44-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:39:22-80
+45    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+45-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:40:5-82
+45-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:40:22-79
+46
+47    <!-- Query installed packages (Android 11+) -->
+48    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+48-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:43:5-44:53
+48-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:43:22-74
+49
+50    <!-- Battery optimization exempt -->
+51    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+51-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:47:5-95
+51-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:47:22-92
+52
+53    <!-- Biometric / device lock authentication for secure pairing -->
+54    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+54-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:50:5-72
+54-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:50:22-69
+55    <uses-permission android:name="android.permission.USE_FINGERPRINT" />
+55-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:51:5-74
+55-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:51:22-71
+56
+57    <!-- NSD (mDNS) for peer discovery on local network -->
+58    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+58-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:54:5-86
+58-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:54:22-83
+59
+60    <!-- Device admin (optional — granted via ADB) -->
+61    <uses-permission android:name="android.permission.BIND_DEVICE_ADMIN" />
+61-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:57:5-76
+61-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:57:22-73
+62
+63    <permission
+63-->[androidx.core:core:1.15.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\21db0778de166bcbbc4981f0ea6f007f\transformed\core-1.15.0\AndroidManifest.xml:22:5-24:47
+64        android:name="com.adbtoolkit.agent.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+64-->[androidx.core:core:1.15.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\21db0778de166bcbbc4981f0ea6f007f\transformed\core-1.15.0\AndroidManifest.xml:23:9-81
+65        android:protectionLevel="signature" />
+65-->[androidx.core:core:1.15.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\21db0778de166bcbbc4981f0ea6f007f\transformed\core-1.15.0\AndroidManifest.xml:24:9-44
+66
+67    <uses-permission android:name="com.adbtoolkit.agent.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" /> <!-- ═══════════════════════════════════════════════════════════════ -->
+67-->[androidx.core:core:1.15.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\21db0778de166bcbbc4981f0ea6f007f\transformed\core-1.15.0\AndroidManifest.xml:26:5-97
+67-->[androidx.core:core:1.15.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\21db0778de166bcbbc4981f0ea6f007f\transformed\core-1.15.0\AndroidManifest.xml:26:22-94
+68    <!-- APPLICATION -->
+69    <!-- ═══════════════════════════════════════════════════════════════ -->
+70    <application
+70-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:63:5-142:19
+71        android:name="com.adbtoolkit.agent.AgentApp"
+71-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:64:9-33
+72        android:allowBackup="true"
+72-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:65:9-35
+73        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+73-->[androidx.core:core:1.15.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\21db0778de166bcbbc4981f0ea6f007f\transformed\core-1.15.0\AndroidManifest.xml:28:18-86
+74        android:debuggable="true"
+75        android:extractNativeLibs="false"
+76        android:icon="@drawable/ic_agent"
+76-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:66:9-42
+77        android:label="@string/app_name"
+77-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:67:9-41
+78        android:networkSecurityConfig="@xml/network_security_config"
+78-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:71:9-69
+79        android:requestLegacyExternalStorage="true"
+79-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:70:9-52
+80        android:supportsRtl="true"
+80-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:68:9-35
+81        android:theme="@style/Theme.Agent" >
+81-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:69:9-43
+82
+83        <!-- Main Activity — permission setup & status dashboard -->
+84        <activity
+84-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:75:9-84:20
+85            android:name="com.adbtoolkit.agent.ui.MainActivity"
+85-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:76:13-44
+86            android:exported="true"
+86-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:77:13-36
+87            android:launchMode="singleTop"
+87-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:78:13-43
+88            android:theme="@style/Theme.Agent" >
+88-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:79:13-47
+89            <intent-filter>
+89-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:80:13-83:29
+90                <action android:name="android.intent.action.MAIN" />
+90-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:81:17-69
+90-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:81:25-66
+91
+92                <category android:name="android.intent.category.LAUNCHER" />
+92-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:82:17-77
+92-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:82:27-74
+93            </intent-filter>
+94        </activity>
+95
+96        <!-- Agent Foreground Service (HTTP + TCP servers) -->
+97        <service
+97-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:87:9-94:19
+98            android:name="com.adbtoolkit.agent.services.AgentService"
+98-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:88:13-50
+99            android:exported="false"
+99-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:89:13-37
+100            android:foregroundServiceType="specialUse" >
+100-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:90:13-55
+101            <property
+101-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:91:13-93:93
+102                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+102-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:92:17-76
+103                android:value="Device management and file transfer agent for ADB Toolkit" />
+103-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:93:17-90
+104        </service>
+105
+106        <!-- High-speed TCP Transfer Service -->
+107        <service
+107-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:97:9-104:19
+108            android:name="com.adbtoolkit.agent.transfer.TransferService"
+108-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:98:13-53
+109            android:exported="false"
+109-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:99:13-37
+110            android:foregroundServiceType="specialUse" >
+110-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:100:13-55
+111            <property
+111-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:91:13-93:93
+112                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+112-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:92:17-76
+113                android:value="High-speed file transfer over TCP" />
+113-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:93:17-90
+114        </service>
+115
+116        <!-- Accessibility Service (UI automation) -->
+117        <service
+117-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:107:9-117:19
+118            android:name="com.adbtoolkit.agent.services.AgentAccessibilityService"
+118-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:108:13-63
+119            android:exported="false"
+119-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:109:13-37
+120            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" >
+120-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:110:13-79
+121            <intent-filter>
+121-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:111:13-113:29
+122                <action android:name="android.accessibilityservice.AccessibilityService" />
+122-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:112:17-92
+122-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:112:25-89
+123            </intent-filter>
+124
+125            <meta-data
+125-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:114:13-116:64
+126                android:name="android.accessibilityservice"
+126-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:115:17-60
+127                android:resource="@xml/accessibility_config" />
+127-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:116:17-61
+128        </service>
+129
+130        <!-- Device Admin Receiver -->
+131        <receiver
+131-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:120:9-130:20
+132            android:name="com.adbtoolkit.agent.services.AgentDeviceAdmin"
+132-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:121:13-54
+133            android:exported="false"
+133-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:122:13-37
+134            android:permission="android.permission.BIND_DEVICE_ADMIN" >
+134-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:123:13-70
+135            <meta-data
+135-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:124:13-126:63
+136                android:name="android.app.device_admin"
+136-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:125:17-56
+137                android:resource="@xml/device_admin_config" />
+137-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:126:17-60
+138
+139            <intent-filter>
+139-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:127:13-129:29
+140                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+140-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:128:17-82
+140-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:128:25-79
+141            </intent-filter>
+142        </receiver>
+143
+144        <!-- Boot receiver to auto-start agent -->
+145        <receiver
+145-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:133:9-140:20
+146            android:name="com.adbtoolkit.agent.services.BootReceiver"
+146-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:134:13-50
+147            android:exported="false" >
+147-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:135:13-37
+148            <intent-filter>
+148-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:136:13-139:29
+149                <action android:name="android.intent.action.BOOT_COMPLETED" />
+149-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:137:17-79
+149-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:137:25-76
+150                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+150-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:138:17-82
+150-->C:\repo\adb-toolkit\agent\app\src\main\AndroidManifest.xml:138:25-79
+151            </intent-filter>
+152        </receiver>
+153
+154        <provider
+154-->[androidx.emoji2:emoji2:1.3.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\6d8bc302aeb654f3acf235860b2b4666\transformed\emoji2-1.3.0\AndroidManifest.xml:24:9-32:20
+155            android:name="androidx.startup.InitializationProvider"
+155-->[androidx.emoji2:emoji2:1.3.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\6d8bc302aeb654f3acf235860b2b4666\transformed\emoji2-1.3.0\AndroidManifest.xml:25:13-67
+156            android:authorities="com.adbtoolkit.agent.androidx-startup"
+156-->[androidx.emoji2:emoji2:1.3.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\6d8bc302aeb654f3acf235860b2b4666\transformed\emoji2-1.3.0\AndroidManifest.xml:26:13-68
+157            android:exported="false" >
+157-->[androidx.emoji2:emoji2:1.3.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\6d8bc302aeb654f3acf235860b2b4666\transformed\emoji2-1.3.0\AndroidManifest.xml:27:13-37
+158            <meta-data
+158-->[androidx.emoji2:emoji2:1.3.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\6d8bc302aeb654f3acf235860b2b4666\transformed\emoji2-1.3.0\AndroidManifest.xml:29:13-31:52
+159                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+159-->[androidx.emoji2:emoji2:1.3.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\6d8bc302aeb654f3acf235860b2b4666\transformed\emoji2-1.3.0\AndroidManifest.xml:30:17-75
+160                android:value="androidx.startup" />
+160-->[androidx.emoji2:emoji2:1.3.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\6d8bc302aeb654f3acf235860b2b4666\transformed\emoji2-1.3.0\AndroidManifest.xml:31:17-49
+161            <meta-data
+161-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\03d2d127a3867e3b8734821d05495128\transformed\lifecycle-process-2.8.7\AndroidManifest.xml:29:13-31:52
+162                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+162-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\03d2d127a3867e3b8734821d05495128\transformed\lifecycle-process-2.8.7\AndroidManifest.xml:30:17-78
+163                android:value="androidx.startup" />
+163-->[androidx.lifecycle:lifecycle-process:2.8.7] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\03d2d127a3867e3b8734821d05495128\transformed\lifecycle-process-2.8.7\AndroidManifest.xml:31:17-49
+164            <meta-data
+164-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:29:13-31:52
+165                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+165-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:30:17-85
+166                android:value="androidx.startup" />
+166-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:31:17-49
+167        </provider>
+168
+169        <receiver
+169-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:34:9-52:20
+170            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+170-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:35:13-76
+171            android:directBootAware="false"
+171-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:36:13-44
+172            android:enabled="true"
+172-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:37:13-35
+173            android:exported="true"
+173-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:38:13-36
+174            android:permission="android.permission.DUMP" >
+174-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:39:13-57
+175            <intent-filter>
+175-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:40:13-42:29
+176                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+176-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:41:17-91
+176-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:41:25-88
+177            </intent-filter>
+178            <intent-filter>
+178-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:43:13-45:29
+179                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+179-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:44:17-85
+179-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:44:25-82
+180            </intent-filter>
+181            <intent-filter>
+181-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:46:13-48:29
+182                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+182-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:47:17-88
+182-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:47:25-85
+183            </intent-filter>
+184            <intent-filter>
+184-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:49:13-51:29
+185                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+185-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:50:17-95
+185-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\GuilhermePinheiroCon\.gradle\caches\8.11.1\transforms\809868ef6dd6e542aafb89c7e24742fe\transformed\profileinstaller-1.4.0\AndroidManifest.xml:50:25-92
+186            </intent-filter>
+187        </receiver>
+188    </application>
+189
+190</manifest>

@@ -28,6 +28,9 @@ config.json
 # Temp scripts
 _tmp_*
 
+# Diagnostic dumps
+diag*.txt
+
 # IDE
 .vscode/
 .idea/

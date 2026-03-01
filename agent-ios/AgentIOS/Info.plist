@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>ADB Toolkit Agent</string>
+    <key>CFBundleDisplayName</key>
+    <string>ADB Agent</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.adbtoolkit.agent.ios</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+    </array>
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <false/>
+    </dict>
+
+    <!-- Privacy descriptions (REQUIRED) -->
+    <key>NSContactsUsageDescription</key>
+    <string>ADB Toolkit Agent needs access to your contacts to sync, backup, and transfer them to/from your PC.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>ADB Toolkit Agent needs access to your photos to backup and transfer them to/from your PC.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>ADB Toolkit Agent needs permission to save photos received from your PC.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>ADB Toolkit Agent uses the local network to communicate with the PC toolkit application.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_adbtoolkit._tcp</string>
+    </array>
+
+    <!-- Background modes -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>processing</string>
+    </array>
+</dict>
+</plist>
