@@ -12,7 +12,7 @@ Public API
   - ``detect_all_gpus()``        — full GPU enumeration
   - ``detect_all_npus()``        — full NPU enumeration
   - ``detect_virtualization()``  — returns VirtInfo
-  - ``parallel_checksum()``      — batch-hash files
+  - ``parallel_checksum()``      — batch-hash files (work-stealing scheduler)
   - ``verify_transfer()``        — compare checksums after clone
   - ``gpu_available()``          — quick boolean
   - ``npu_available()``          — quick boolean
@@ -29,10 +29,15 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 # ── pyaccelerate imports ────────────────────────────────────────────────
 from pyaccelerate import (
+    AdaptiveConfig,
+    AdaptiveScheduler,
     Engine,
     EnergyProfile,
     MaxMode,
     TaskPriority,
+    WorkStealingScheduler,
+    ws_map,
+    ws_submit,
 )
 from pyaccelerate.gpu import (
     GPUDevice,
@@ -55,6 +60,7 @@ from pyaccelerate.virt import detect as _detect_virt
 from pyaccelerate.cpu import detect as _detect_cpu
 from pyaccelerate.memory import get_pressure, get_stats as get_mem_stats
 from pyaccelerate.threads import get_pool, run_parallel as _threads_run_parallel
+from pyaccelerate.work_stealing import get_scheduler as _get_ws_scheduler
 from pyaccelerate import (
     balanced as apply_balanced,
     max_performance as apply_max_performance,
@@ -112,6 +118,10 @@ def parallel_checksum(
 ) -> Dict[str, str]:
     """Compute checksums for many files in parallel.
 
+    Uses the pyaccelerate **work-stealing scheduler** (v0.7.0) for
+    CPU-bound hashing — better load balancing and cache locality
+    than a plain thread pool.
+
     Parameters
     ----------
     use_gpu : bool
@@ -119,32 +129,37 @@ def parallel_checksum(
     multi_gpu : bool
         Reserved for future multi-GPU hashing.
     """
-    results: Dict[str, str] = {}
     total = len(file_paths)
-    done_count = 0
+    if not total:
+        return {}
 
-    # Use the shared pyaccelerate I/O pool
+    # Work-stealing scheduler: optimal for CPU-bound hashing
     try:
-        pool = get_pool()
+        hashes = ws_map(
+            _hash_file_cpu,
+            [(fp, algo) for fp in file_paths],
+        )
+        results = dict(zip(file_paths, hashes))
     except Exception:
-        pool = ThreadPoolExecutor(max_workers=max_workers)
-
-    futures = {pool.submit(_hash_file_cpu, fp, algo): fp for fp in file_paths}
-
-    for fut in as_completed(futures):
-        fp = futures[fut]
-        done_count += 1
-        try:
-            results[fp] = fut.result()
-        except Exception:
-            results[fp] = ""
-        if progress_cb:
+        # Fallback to I/O pool if work-stealing unavailable
+        results = {}
+        pool = get_pool()
+        futures = {pool.submit(_hash_file_cpu, fp, algo): fp for fp in file_paths}
+        for fut in as_completed(futures):
+            fp = futures[fut]
             try:
-                progress_cb(done_count, total, fp)
+                results[fp] = fut.result()
+            except Exception:
+                results[fp] = ""
+
+    if progress_cb:
+        for i, fp in enumerate(file_paths, 1):
+            try:
+                progress_cb(i, total, fp)
             except Exception:
                 pass
 
-    log.info("Checksummed %d files via CPU (%d workers)", total, max_workers)
+    log.info("Checksummed %d files via work-stealing scheduler", total)
     return results
 
 
@@ -247,6 +262,11 @@ class TransferAccelerator:
       IDLE / BELOW_NORMAL / NORMAL / ABOVE_NORMAL / HIGH / REALTIME.
     * **Presets** — ``preset_balanced()``, ``preset_max_performance()``,
       ``preset_power_saver()``.
+    * **Work-stealing scheduler** (v0.7.0) — ``ws_submit()``, ``ws_map()``,
+      ``work_stealing_scheduler`` for CPU-bound batch tasks with optimal
+      load balancing via Chase-Lev deques.
+    * **Adaptive scheduler** (v0.7.0) — ``adaptive_scheduler()`` auto-tunes
+      worker count based on latency, CPU & memory pressure.
     """
 
     # --- static helper: dynamic thread calculation ---------------------------
@@ -477,3 +497,38 @@ class TransferAccelerator:
             "checksum_algo": self.checksum_algo,
         }
         return d
+
+    # --- Work-Stealing Scheduler (v0.7.0) ------------------------------------
+    @property
+    def work_stealing_scheduler(self) -> WorkStealingScheduler:
+        """Return the work-stealing scheduler sized for this hardware.
+
+        Lazily created and reused.  Ideal for CPU-bound batch tasks
+        (hashing, compression, dedup comparison) where load balancing
+        across cores matters more than I/O concurrency.
+        """
+        return self._engine.get_work_stealing_scheduler()
+
+    def ws_submit(self, fn, *args, **kwargs):
+        """Submit a single task to the work-stealing scheduler."""
+        return self._engine.ws_submit(fn, *args, **kwargs)
+
+    def ws_map(self, fn, items, timeout=None):
+        """Map *fn* over *items* using work-stealing (returns ordered results)."""
+        return self._engine.ws_map(fn, items, timeout=timeout)
+
+    # --- Adaptive Scheduler (v0.7.0) -----------------------------------------
+    def adaptive_scheduler(
+        self,
+        config: Optional[AdaptiveConfig] = None,
+    ) -> AdaptiveScheduler:
+        """Return an :class:`AdaptiveScheduler` that dynamically rescales
+        workers based on latency, CPU & memory pressure.
+
+        Usage::
+
+            with accel.adaptive_scheduler() as sched:
+                results = sched.map(heavy_fn, [(item,) for item in data])
+                snap = sched.snapshot()
+        """
+        return self._engine.adaptive_scheduler(config=config)

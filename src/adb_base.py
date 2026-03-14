@@ -41,6 +41,7 @@ from typing import (
 from .adb_core import ADBCore
 from pyaccelerate.threads import get_pool as _pyaccel_get_pool
 from pyaccelerate.threads import run_parallel as _pyaccel_run_parallel
+from pyaccelerate.work_stealing import ws_map as _pyaccel_ws_map
 
 if TYPE_CHECKING:
     from .accelerator import TransferAccelerator
@@ -186,6 +187,27 @@ def _load_path_mapping(backup_dir: Path) -> Dict[str, str]:
 def get_io_pool() -> ThreadPoolExecutor:
     """Return the shared persistent I/O thread pool (pyaccelerate)."""
     return _pyaccel_get_pool()
+
+
+def run_cpu_parallel(
+    fn: Callable[..., Any],
+    items: List[tuple],
+    timeout: Optional[float] = None,
+) -> List[Any]:
+    """Execute ``fn(*item)`` over *items* using the work-stealing scheduler.
+
+    Designed for **CPU-bound** tasks (hashing, compression, comparison)
+    where Chase-Lev deque load-balancing outperforms the I/O thread pool.
+    Returns results in the same order as *items*.
+
+    Falls back to sequential execution if the scheduler is unavailable.
+    """
+    if not items:
+        return []
+    try:
+        return _pyaccel_ws_map(fn, items, timeout=timeout)
+    except Exception:
+        return [fn(*args) for args in items]
 
 
 def run_parallel(
