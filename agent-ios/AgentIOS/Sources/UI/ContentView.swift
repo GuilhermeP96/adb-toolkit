@@ -16,6 +16,43 @@ import Photos
 struct ContentView: View {
 
     @EnvironmentObject var state: AgentState
+
+    var body: some View {
+        TabView {
+            DashboardTab()
+                .environmentObject(state)
+                .tabItem {
+                    Label("Dashboard", systemImage: "gauge")
+                }
+
+            CleanupView()
+                .environmentObject(state)
+                .tabItem {
+                    Label("Limpeza", systemImage: "trash")
+                }
+
+            TransferView()
+                .environmentObject(state)
+                .tabItem {
+                    Label("Transferir", systemImage: "arrow.left.arrow.right")
+                }
+
+            SettingsTab()
+                .environmentObject(state)
+                .tabItem {
+                    Label("Configurações", systemImage: "gear")
+                }
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  DashboardTab — Original ContentView main content
+// ─────────────────────────────────────────────────────────────────────
+
+struct DashboardTab: View {
+
+    @EnvironmentObject var state: AgentState
     @State private var showToken = false
 
     var body: some View {
@@ -143,7 +180,7 @@ struct ContentView: View {
                     }
                 }
             }
-            .navigationTitle("ADB Toolkit Agent")
+            .navigationTitle("Dashboard")
             .navigationBarTitleDisplayMode(.inline)
         }
     }
@@ -160,6 +197,69 @@ struct ContentView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
         return formatter.string(from: date)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  SettingsTab — Permissions and paired devices management
+// ─────────────────────────────────────────────────────────────────────
+
+struct SettingsTab: View {
+
+    @EnvironmentObject var state: AgentState
+    @State private var showToken = false
+
+    var body: some View {
+        NavigationView {
+            List {
+                // ── Auth token ──
+                Section("Token de Autenticação") {
+                    HStack {
+                        Text(showToken ? state.authToken : "••••••••••••")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Button(showToken ? "Ocultar" : "Mostrar") {
+                            showToken.toggle()
+                        }
+                        .font(.caption)
+                    }
+                }
+
+                // ── Paired devices ──
+                Section("Dispositivos Pareados (\(state.pairedDevices))") {
+                    if let pm = state.pairingManager {
+                        let devices = pm.getPairedDevices()
+                        if devices.isEmpty {
+                            Text("Nenhum dispositivo pareado")
+                                .foregroundColor(.secondary)
+                        } else {
+                            ForEach(devices, id: \.peerId) { device in
+                                HStack {
+                                    Image(systemName: "link.circle.fill")
+                                        .foregroundColor(.blue)
+                                    VStack(alignment: .leading) {
+                                        Text(device.name).font(.body)
+                                        Text(device.peerId)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── Permissions ──
+                Section("Permissões") {
+                    NavigationLink("Gerenciar Permissões") {
+                        PermissionsView()
+                    }
+                }
+            }
+            .navigationTitle("Configurações")
+            .navigationBarTitleDisplayMode(.inline)
+        }
     }
 }
 

@@ -52,6 +52,8 @@
     <string name="nav_dashboard">Dashboard</string>
     <string name="nav_files">Arquivos</string>
     <string name="nav_apps">Apps</string>
+    <string name="nav_cleanup">Limpeza</string>
+    <string name="nav_transfer">Transferir</string>
     <string name="nav_terminal">Terminal</string>
     <string name="nav_settings">Configurações</string>
 
@@ -82,6 +84,42 @@
 
     <!-- Terminal Tab -->
     <string name="hint_command">Comando…</string>
+
+    <!-- Cleanup Tab -->
+    <string name="cleanup_title">Limpeza do Dispositivo</string>
+    <string name="cleanup_idle">Pronto para escanear</string>
+    <string name="cleanup_app_cache">Cache de apps</string>
+    <string name="cleanup_junk_dirs">Diretórios de lixo</string>
+    <string name="cleanup_junk_files">Arquivos temporários</string>
+    <string name="cleanup_known_junk">Lixo conhecido</string>
+    <string name="cleanup_orphans">Dados órfãos</string>
+    <string name="cleanup_duplicates">Duplicatas</string>
+    <string name="cleanup_scan">Escanear</string>
+    <string name="cleanup_results">Resultados</string>
+    <string name="cleanup_select_all">Selecionar Tudo</string>
+    <string name="cleanup_clean">Limpar Selecionados</string>
+
+    <!-- Transfer Tab -->
+    <string name="transfer_title">Transferência de Dados</string>
+    <string name="transfer_role_hint">Selecione o papel deste dispositivo</string>
+    <string name="transfer_role_source">Origem</string>
+    <string name="transfer_role_dest">Destino</string>
+    <string name="transfer_role_relay">Relay</string>
+    <string name="transfer_role_source_desc">Este dispositivo enviará dados para o par selecionado</string>
+    <string name="transfer_role_dest_desc">Este dispositivo receberá dados do par selecionado</string>
+    <string name="transfer_role_relay_desc">Este dispositivo será intermediário para backup/recovery entre dois outros pares</string>
+    <string name="transfer_peers">Dispositivos na Rede</string>
+    <string name="transfer_refresh">Atualizar</string>
+    <string name="transfer_no_peers">Nenhum dispositivo encontrado na rede</string>
+    <string name="transfer_select_data">Dados para Transferir</string>
+    <string name="transfer_data_contacts">Contatos</string>
+    <string name="transfer_data_photos">Fotos e Vídeos</string>
+    <string name="transfer_data_apps">Apps Instalados</string>
+    <string name="transfer_data_sms">SMS / Mensagens</string>
+    <string name="transfer_data_files">Arquivos</string>
+    <string name="transfer_data_wifi">Redes Wi-Fi</string>
+    <string name="transfer_progress">Progresso da Transferência</string>
+    <string name="transfer_start">Iniciar Transferência</string>
 
     <!-- Settings Tab -->
     <string name="card_security">Segurança e Pareamento</string>

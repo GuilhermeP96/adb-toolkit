@@ -13,6 +13,14 @@
         android:icon="@drawable/ic_apps"
         android:title="@string/nav_apps" />
     <item
+        android:id="@+id/nav_cleanup"
+        android:icon="@drawable/ic_cleanup"
+        android:title="@string/nav_cleanup" />
+    <item
+        android:id="@+id/nav_transfer"
+        android:icon="@drawable/ic_transfer"
+        android:title="@string/nav_transfer" />
+    <item
         android:id="@+id/nav_terminal"
         android:icon="@drawable/ic_terminal"
         android:title="@string/nav_terminal" />

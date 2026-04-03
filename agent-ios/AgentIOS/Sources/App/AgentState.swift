@@ -19,6 +19,16 @@ final class AgentState: ObservableObject {
     @Published var logLines: [LogEntry] = []
     @Published var localIPAddress: String = "—"
 
+    // Cleanup state
+    @Published var isCleanupRunning = false
+    @Published var lastCleanupResult: String = ""
+
+    // Transfer state
+    @Published var transferRole: String = "source"  // source | dest | relay
+    @Published var isTransferActive = false
+    @Published var transferProgress: Double = 0
+    @Published var discoveredPeers: Int = 0
+
     // Subsystems
     private(set) var httpServer: HTTPServer?
     private(set) var transferServer: TransferServer?

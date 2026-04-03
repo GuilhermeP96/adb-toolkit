@@ -43,6 +43,8 @@ class MainActivity : AppCompatActivity() {
     private val dashboardFragment by lazy { DashboardFragment() }
     private val filesFragment by lazy { FilesFragment() }
     private val appsFragment by lazy { AppsFragment() }
+    private val cleanupFragment by lazy { CleanupFragment() }
+    private val transferFragment by lazy { TransferFragment() }
     private val terminalFragment by lazy { TerminalFragment() }
     private val settingsFragment by lazy { SettingsFragment() }
     private var activeFragment: Fragment? = null
@@ -131,6 +133,8 @@ class MainActivity : AppCompatActivity() {
                 R.id.nav_dashboard -> dashboardFragment
                 R.id.nav_files     -> filesFragment
                 R.id.nav_apps      -> appsFragment
+                R.id.nav_cleanup   -> cleanupFragment
+                R.id.nav_transfer  -> transferFragment
                 R.id.nav_terminal  -> terminalFragment
                 R.id.nav_settings  -> settingsFragment
                 else -> dashboardFragment
