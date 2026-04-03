@@ -2,7 +2,8 @@
 accelerator.py — Thin wrapper around **pyaccelerate** for the ADB Toolkit.
 
 All heavy lifting (GPU/NPU enumeration, thread-pool management, priority
-control, energy profiles) is delegated to the ``pyaccelerate`` package.
+control, energy profiles, auto-tuning, memory management) is delegated to
+the ``pyaccelerate`` package (>= 0.10.0).
 This module re-exports types and provides the ADB-specific helpers
 (``parallel_checksum``, ``verify_transfer``, ``TransferAccelerator``).
 
@@ -23,9 +24,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import as_completed
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # ── pyaccelerate imports ────────────────────────────────────────────────
 from pyaccelerate import (
@@ -38,6 +39,8 @@ from pyaccelerate import (
     WorkStealingScheduler,
     ws_map,
     ws_submit,
+    auto_tune as _auto_tune,
+    get_or_tune as _get_or_tune,
 )
 from pyaccelerate.gpu import (
     GPUDevice,
@@ -57,10 +60,23 @@ from pyaccelerate.npu import (
 )
 from pyaccelerate.virt import VirtInfo
 from pyaccelerate.virt import detect as _detect_virt
-from pyaccelerate.cpu import detect as _detect_cpu
-from pyaccelerate.memory import get_pressure, get_stats as get_mem_stats
+from pyaccelerate.cpu import detect as _detect_cpu, recommend_workers as _recommend_workers
+from pyaccelerate.memory import (
+    BufferPool,
+    Pressure,
+    clamp_workers,
+    get_pressure,
+    get_stats as get_mem_stats,
+)
 from pyaccelerate.threads import get_pool, run_parallel as _threads_run_parallel
 from pyaccelerate.work_stealing import get_scheduler as _get_ws_scheduler
+from pyaccelerate.profiler import timed
+from pyaccelerate.pipeline import Pipeline, Stage, PipelineResult  # v0.10.0
+from pyaccelerate.retry import RetryPolicy, retry_call  # v0.10.0
+from pyaccelerate.circuit_breaker import CircuitBreaker, CircuitOpenError  # v0.10.0
+from pyaccelerate.rate_limiter import RateLimiter  # v0.10.0
+from pyaccelerate.health import health_check as _health_check, HealthReport  # v0.10.0
+from pyaccelerate.gpu import gpu_hash_file, gpu_hash_batch, gpu_hash_available  # v0.10.0
 from pyaccelerate import (
     balanced as apply_balanced,
     max_performance as apply_max_performance,
@@ -68,6 +84,9 @@ from pyaccelerate import (
 )
 
 log = logging.getLogger("adb_toolkit.accelerator")
+
+# Shared buffer pool for file hashing (1 MB buffers, reused across calls)
+_hash_buffer_pool = BufferPool(buffer_size=1 << 20, max_buffers=16)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -93,21 +112,25 @@ def detect_virtualization() -> VirtInfo:
 #  Checksum computation  (ADB-specific — not in pyaccelerate)
 # ═══════════════════════════════════════════════════════════════════════════
 def _hash_file_cpu(path: str, algo: str = "md5") -> str:
-    """Hash a single file on CPU (always available)."""
+    """Hash a single file on CPU using pooled buffers for efficiency."""
     h = hashlib.new(algo)
+    buf = _hash_buffer_pool.acquire()
     try:
         with open(path, "rb") as f:
             while True:
-                chunk = f.read(1 << 20)
-                if not chunk:
+                n = f.readinto(buf)
+                if not n:
                     break
-                h.update(chunk)
+                h.update(buf[:n])
     except Exception as exc:
         log.warning("Cannot hash %s: %s", path, exc)
         return ""
+    finally:
+        _hash_buffer_pool.release(buf)
     return h.hexdigest()
 
 
+@timed(label="parallel_checksum", level=logging.INFO)
 def parallel_checksum(
     file_paths: List[str],
     algo: str = "md5",
@@ -166,6 +189,7 @@ def parallel_checksum(
 # ═══════════════════════════════════════════════════════════════════════════
 #  Transfer verification  (ADB-specific)
 # ═══════════════════════════════════════════════════════════════════════════
+@timed(label="verify_transfer", level=logging.INFO)
 def verify_transfer(
     staging_dir: Path,
     storage_path: str,
@@ -267,6 +291,15 @@ class TransferAccelerator:
       load balancing via Chase-Lev deques.
     * **Adaptive scheduler** (v0.7.0) — ``adaptive_scheduler()`` auto-tunes
       worker count based on latency, CPU & memory pressure.
+    * **Pipeline** (v0.10.0) — ``run_pipeline()`` for multi-stage processing
+      with backpressure and per-stage statistics.
+    * **Retry / Circuit Breaker** (v0.10.0) — ``submit_with_retry()``,
+      ``circuit_breaker`` for robust transfer operations.
+    * **Rate Limiter** (v0.10.0) — ``rate_limiter`` for throttling I/O.
+    * **GPU Hashing** (v0.10.0) — ``gpu_hash_file()``, ``gpu_hash_batch()``
+      for GPU-accelerated checksums.
+    * **Health Check** (v0.10.0) — ``health_check()`` for aggregated system
+      health (CPU, memory, disk, GPU).
     """
 
     # --- static helper: dynamic thread calculation ---------------------------
@@ -274,27 +307,19 @@ class TransferAccelerator:
     def compute_dynamic_workers() -> Tuple[int, int]:
         """Return ``(pull_workers, push_workers)`` tuned to the host.
 
+        Uses pyaccelerate's ``recommend_workers`` and ``clamp_workers``
+        for hardware-aware, memory-pressure-aware sizing.
+
         Heuristic
         ---------
         * ADB operations are I/O-bound (>95 % time is USB/subprocess wait).
-        * Pull: ``min(cpu_cores × 2, 16)``
-        * Push: ``min(cpu_cores × 2, 12)``
-        * Low-RAM (< 4 GB) clamp applied.
+        * Pull: ``min(recommended_io, 16)``
+        * Push: ``min(recommended_io, 12)``
+        * Memory-pressure clamp applied automatically.
         """
-        cores = os.cpu_count() or 4
-        try:
-            import psutil  # type: ignore[import-untyped]
-            ram_gb = psutil.virtual_memory().total / (1024 ** 3)
-        except Exception:
-            ram_gb = 8.0
-
-        pull = min(cores * 2, 16)
-        push = min(cores * 2, 12)
-        if ram_gb < 4:
-            pull = min(pull, 6)
-            push = min(push, 4)
-        pull = max(2, pull)
-        push = max(2, push)
+        io_rec = _recommend_workers(io_bound=True)
+        pull = clamp_workers(min(io_rec, 16), floor=2)
+        push = clamp_workers(min(io_rec, 12), floor=2)
         return pull, push
 
     @staticmethod
@@ -450,7 +475,10 @@ class TransferAccelerator:
 
     # --- Workers (ADB-specific heuristic) ------------------------------------
     def optimal_workers(self, file_count: int, avg_size_bytes: int = 0) -> int:
-        """Return the ideal worker count for a batch of *file_count* files."""
+        """Return the ideal worker count for a batch of *file_count* files.
+
+        Automatically clamped by memory pressure via pyaccelerate.
+        """
         if file_count <= 1:
             return 1
         cores = os.cpu_count() or 4
@@ -460,7 +488,8 @@ class TransferAccelerator:
             cap = min(4, cores)
         else:
             cap = min(self.max_pull_workers, cores * 2, 16)
-        return min(cap, file_count)
+        desired = min(cap, file_count)
+        return clamp_workers(desired, floor=1)
 
     # --- Summary / status (delegated with ADB-specific extras) ---------------
     def summary(self) -> str:
@@ -480,6 +509,8 @@ class TransferAccelerator:
             f"  Verification: {'ON' if self.verify_checksums else 'OFF'}"
             f" ({self.checksum_algo.upper()})"
         )
+        pressure = get_pressure()
+        lines.append(f"  Memory pressure: {pressure.name}")
         return "\n".join(lines)
 
     def status_line(self) -> str:
@@ -532,3 +563,132 @@ class TransferAccelerator:
                 snap = sched.snapshot()
         """
         return self._engine.adaptive_scheduler(config=config)
+
+    # --- Memory pressure (v0.7.0) --------------------------------------------
+    @property
+    def memory_pressure(self) -> Pressure:
+        """Current system memory pressure level."""
+        return self._engine.memory_pressure
+
+    # --- CPU info (v0.7.0) ---------------------------------------------------
+    @property
+    def cpu_info(self) -> Any:
+        """CPU detection snapshot (arch, cores, flags, ARM clusters, etc.)."""
+        return self._engine.cpu
+
+    # --- Auto-tune (v0.7.0) --------------------------------------------------
+    def auto_tune(self, *, quick: bool = True, apply: bool = True) -> Dict[str, Any]:
+        """Run an auto-tuning cycle and optionally apply results.
+
+        Benchmarks the current hardware, saves a :class:`TuneProfile`,
+        and adjusts pools, priority, and energy profile when *apply* is True.
+        Returns the profile as a dict.
+        """
+        return self._engine.auto_tune(quick=quick, apply=apply)
+
+    @staticmethod
+    def get_or_tune() -> Any:
+        """Load an existing tune profile or run a new tuning cycle if stale."""
+        return _get_or_tune()
+
+    # --- Shutdown (v0.7.0) ---------------------------------------------------
+    def shutdown(self, wait_for: bool = True) -> None:
+        """Shut down all shared pools and schedulers. Call during app exit."""
+        self._engine.shutdown(wait_for=wait_for)
+
+    # --- Pipeline (v0.10.0) --------------------------------------------------
+    def run_pipeline(
+        self,
+        stages: Any,
+        items: Any,
+    ) -> PipelineResult:
+        """Run a multi-stage pipeline with backpressure.
+
+        Parameters
+        ----------
+        stages
+            A :class:`Pipeline` instance or a list of :class:`Stage` objects.
+        items
+            Iterable of input items for the first stage.
+
+        Returns
+        -------
+        PipelineResult
+        """
+        return self._engine.run_pipeline(stages, items)
+
+    # --- Retry (v0.10.0) -----------------------------------------------------
+    def submit_with_retry(
+        self,
+        fn: Callable,
+        *args: Any,
+        max_attempts: int = 3,
+        backoff_base: float = 1.0,
+        **kwargs: Any,
+    ) -> Any:
+        """Execute *fn* with automatic retry on failure."""
+        return self._engine.submit_with_retry(
+            fn, *args, max_attempts=max_attempts,
+            backoff_base=backoff_base, **kwargs,
+        )
+
+    # --- Circuit Breaker (v0.10.0) -------------------------------------------
+    def circuit_breaker(
+        self,
+        name: str = "adb-transfer",
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
+    ) -> CircuitBreaker:
+        """Create a :class:`CircuitBreaker` for fault-tolerant operations.
+
+        Usage::
+
+            cb = accel.circuit_breaker()
+            with cb:
+                do_flaky_transfer()
+        """
+        return CircuitBreaker(
+            failure_threshold=failure_threshold,
+            recovery_timeout=recovery_timeout,
+            name=name,
+        )
+
+    # --- Rate Limiter (v0.10.0) ----------------------------------------------
+    def rate_limiter(
+        self,
+        rate: float = 10.0,
+        burst: int = 0,
+    ) -> RateLimiter:
+        """Create a :class:`RateLimiter` for throttling I/O operations.
+
+        Parameters
+        ----------
+        rate
+            Max operations per second.
+        burst
+            Token bucket capacity (0 = same as rate).
+        """
+        return RateLimiter(rate=rate, burst=burst or int(rate))
+
+    # --- GPU Hashing (v0.10.0) -----------------------------------------------
+    def gpu_hash_files(
+        self,
+        paths: List[str],
+        algo: str = "sha256",
+    ) -> Dict[str, str]:
+        """Hash files using GPU when available, CPU fallback otherwise.
+
+        Uses pyaccelerate's gpu_hash_batch for batch acceleration.
+        """
+        if not paths:
+            return {}
+        return gpu_hash_batch(paths, algo=algo)
+
+    # --- Health Check (v0.10.0) ----------------------------------------------
+    def health_check(self, include_gpu: bool = True) -> HealthReport:
+        """Run aggregated system health checks.
+
+        Returns a :class:`HealthReport` with per-component status
+        (CPU, memory, disk, GPU).
+        """
+        return _health_check(include_gpu=include_gpu)
