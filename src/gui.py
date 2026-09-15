@@ -711,7 +711,7 @@ class ADBToolkitApp(ctk.CTk):
                 self._safe_after(0, lambda: self._scan_finished(estimates))
             except Exception as exc:
                 log.exception("Scan error: %s", exc)
-                self._safe_after(0, lambda: self._scan_error(str(exc)))
+                self._safe_after(0, lambda error=str(exc): self._scan_error(error))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -848,7 +848,7 @@ class ADBToolkitApp(ctk.CTk):
                 self._safe_after(0, lambda: self._execute_finished(results))
             except Exception as exc:
                 log.exception("Cleanup error: %s", exc)
-                self._safe_after(0, lambda: self._execute_error(str(exc)))
+                self._safe_after(0, lambda error=str(exc): self._execute_error(error))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2142,7 +2142,7 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._on_messaging_detected(installed))
             except Exception as exc:
                 log.warning("Messaging detection error: %s", exc)
-                self.after(0, lambda: self._set_status(f"{t('common.error')}: {exc}"))
+                self.after(0, lambda error=str(exc): self._set_status(f"{t('common.error')}: {error}"))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -2182,7 +2182,7 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._on_unsynced_detected(detected))
             except Exception as exc:
                 log.warning("Unsynced app detection error: %s", exc)
-                self.after(0, lambda: self._set_status(f"{t('common.error')}: {exc}"))
+                self.after(0, lambda error=str(exc): self._set_status(f"{t('common.error')}: {error}"))
                 self.after(0, lambda: self.btn_detect_unsynced.configure(
                     state="normal", text=t("backup.btn_detect_unsynced"),
                 ))
@@ -5351,8 +5351,8 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._render_cache_list(cache_data, scroll_frame))
             except Exception as exc:
                 log.warning("Cache scan error: %s", exc)
-                self.after(0, lambda: self._cache_status_label.configure(
-                    text=t("cache.scan_error", error=exc)
+                self.after(0, lambda error=str(exc): self._cache_status_label.configure(
+                    text=t("cache.scan_error", error=error)
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -5446,8 +5446,8 @@ class ADBToolkitApp(ctk.CTk):
                     serial, self._cache_scroll_frame, dialog,
                 ))
             except Exception as exc:
-                self.after(0, lambda: self._cache_status_label.configure(
-                    text=f"{t('common.error')}: {exc}"
+                self.after(0, lambda error=str(exc): self._cache_status_label.configure(
+                    text=f"{t('common.error')}: {error}"
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -5491,8 +5491,8 @@ class ADBToolkitApp(ctk.CTk):
                     serial, self._cache_scroll_frame, dialog,
                 ))
             except Exception as exc:
-                self.after(0, lambda: self._cache_status_label.configure(
-                    text=f"{t('common.error')}: {exc}"
+                self.after(0, lambda error=str(exc): self._cache_status_label.configure(
+                    text=f"{t('common.error')}: {error}"
                 ))
 
         threading.Thread(target=_run, daemon=True).start()
@@ -5664,7 +5664,7 @@ class ADBToolkitApp(ctk.CTk):
 
                 self.after(0, lambda: messagebox.showinfo("Backup", t("backup.completed")))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
+                self.after(0, lambda error=str(exc): messagebox.showerror(t("common.error"), error))
             finally:
                 self.after(0, self._backup_finished)
 
@@ -5819,7 +5819,7 @@ class ADBToolkitApp(ctk.CTk):
                     t("restore.title"), t("restore.completed")
                 ))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
+                self.after(0, lambda error=str(exc): messagebox.showerror(t("common.error"), error))
             finally:
                 self.after(0, self._restore_finished)
 
@@ -5977,7 +5977,7 @@ class ADBToolkitApp(ctk.CTk):
                 msg = t("transfer.completed") if success else t("transfer.completed_errors")
                 self.after(0, lambda: messagebox.showinfo(t("transfer.title"), msg))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
+                self.after(0, lambda error=str(exc): messagebox.showerror(t("common.error"), error))
             finally:
                 self.after(0, self._transfer_finished)
 
@@ -6122,7 +6122,7 @@ class ADBToolkitApp(ctk.CTk):
                     )
                     self.after(0, lambda: messagebox.showinfo(t("transfer.title"), msg))
                 except Exception as exc:
-                    self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
+                    self.after(0, lambda error=str(exc): messagebox.showerror(t("common.error"), error))
                 finally:
                     self.after(0, self._transfer_finished)
 
@@ -6203,7 +6203,7 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._on_unsynced_transfer_detected(detected))
             except Exception as exc:
                 log.warning("Transfer unsynced detection error: %s", exc)
-                self.after(0, lambda: self._set_status(f"{t('common.error')}: {exc}"))
+                self.after(0, lambda error=str(exc): self._set_status(f"{t('common.error')}: {error}"))
                 self.after(0, lambda: self.btn_detect_unsynced_transfer.configure(
                     state="normal", text=t("transfer.btn_detect"),
                 ))
@@ -6226,7 +6226,7 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self._on_messaging_transfer_detected(installed))
             except Exception as exc:
                 log.warning("Transfer messaging detection error: %s", exc)
-                self.after(0, lambda: self._set_status(f"{t('common.error')}: {exc}"))
+                self.after(0, lambda error=str(exc): self._set_status(f"{t('common.error')}: {error}"))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -6529,7 +6529,7 @@ class ADBToolkitApp(ctk.CTk):
                         )
                         self.after(0, lambda: messagebox.showinfo(t("clone.title"), msg))
                     except Exception as exc:
-                        self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
+                        self.after(0, lambda error=str(exc): messagebox.showerror(t("common.error"), error))
                     finally:
                         self.after(0, self._transfer_finished)
 
@@ -6554,7 +6554,7 @@ class ADBToolkitApp(ctk.CTk):
                         )
                         self.after(0, lambda: messagebox.showinfo(t("clone.title"), msg))
                     except Exception as exc:
-                        self.after(0, lambda: messagebox.showerror(t("common.error"), str(exc)))
+                        self.after(0, lambda error=str(exc): messagebox.showerror(t("common.error"), error))
                     finally:
                         self.after(0, self._transfer_finished)
 
@@ -6879,7 +6879,7 @@ class ADBToolkitApp(ctk.CTk):
                 self.after(0, lambda: self.entry_adb_path.delete(0, "end"))
                 self.after(0, lambda: self.entry_adb_path.insert(0, self.adb.adb_path or ""))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro", str(exc)))
+                self.after(0, lambda error=str(exc): messagebox.showerror("Erro", error))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -7086,8 +7086,8 @@ class ADBToolkitApp(ctk.CTk):
             self._safe_after(0, lambda: self.lbl_settings_gpu_info.configure(text=text))
         except Exception as exc:
             self._safe_after(
-                0, lambda: self.lbl_settings_gpu_info.configure(
-                    text=f"{t('common.error')}: {exc}",
+                0, lambda error=str(exc): self.lbl_settings_gpu_info.configure(
+                    text=f"{t('common.error')}: {error}",
                 ),
             )
 

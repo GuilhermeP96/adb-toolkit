@@ -454,7 +454,7 @@ class DeviceTreeBrowser(ctk.CTkFrame):
             self.after(0, lambda: self._render_entries(remote_path, entries))
         except Exception as exc:
             log.warning("Failed to list %s: %s", remote_path, exc)
-            self.after(0, lambda: self._render_error(str(exc)))
+            self.after(0, lambda error=str(exc): self._render_error(error))
         finally:
             self._loading = False
 

@@ -143,7 +143,7 @@ Aplicativo iOS em Swift com servidor HTTP embarcado:
 
 ## 📋 Requisitos
 
-- **Python** 3.9+
+- **Python** 3.10+
 - **ADB** (baixado automaticamente se não encontrado)
 - **Windows**: drivers USB (instalados automaticamente)
 - **Linux/macOS**: geralmente não precisa de drivers adicionais

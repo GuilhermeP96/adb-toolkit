@@ -22,11 +22,12 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .device_interface import (
+    CalendarEvent,
     DeviceInterface,
     DeviceManager,
     DevicePlatform,
