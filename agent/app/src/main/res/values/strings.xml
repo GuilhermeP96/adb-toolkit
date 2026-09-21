@@ -94,6 +94,8 @@
     <string name="cleanup_known_junk">Lixo conhecido</string>
     <string name="cleanup_orphans">Dados órfãos</string>
     <string name="cleanup_duplicates">Duplicatas</string>
+    <string name="cleanup_wa_sent">WhatsApp Sent Media</string>
+    <string name="cleanup_wa_sent_hint">Vídeos, imagens e docs enviados pelo WhatsApp (por idade)</string>
     <string name="cleanup_scan">Escanear</string>
     <string name="cleanup_results">Resultados</string>
     <string name="cleanup_select_all">Selecionar Tudo</string>

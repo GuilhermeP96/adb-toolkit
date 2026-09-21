@@ -20,6 +20,23 @@ struct CleanupView: View {
     @State private var scanAppCache = true
     @State private var scanTempFiles = true
     @State private var scanKnownJunk = true
+    @State private var scanWaSent = false
+    @State private var waAgeDays = 365
+
+    // WhatsApp Sent age options
+    private let waAgeOptions: [(days: Int, label: String)] = [
+        (90,  "Sent > 90 dias"),
+        (180, "Sent > 6 meses"),
+        (365, "Sent > 1 ano"),
+        (730, "Sent > 2 anos"),
+        (1095, "Sent > 3 anos"),
+        (Int.max, "Toda pasta Sent"),
+    ]
+
+    // WhatsApp filename date pattern
+    private let waDateRegex = try! NSRegularExpression(
+        pattern: "(?:VID|IMG|AUD|DOC|STK|PTT)-?(\\d{4})(\\d{2})(\\d{2})-WA"
+    )
 
     // Results
     @State private var isScanning = false
@@ -46,6 +63,18 @@ struct CleanupView: View {
                     Toggle("Cache de apps", isOn: $scanAppCache)
                     Toggle("Arquivos temporários", isOn: $scanTempFiles)
                     Toggle("Lixo conhecido", isOn: $scanKnownJunk)
+                    Toggle("WhatsApp Sent Media", isOn: $scanWaSent)
+                    if scanWaSent {
+                        Picker("Idade mínima", selection: $waAgeDays) {
+                            ForEach(waAgeOptions, id: \.days) { opt in
+                                Text(opt.label).tag(opt.days)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        Text("Escaneia vídeos/imagens enviados pelo WhatsApp exportados para Arquivos")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 // ── Status & action ──
@@ -67,7 +96,7 @@ struct CleanupView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isScanning || (!scanAppCache && !scanTempFiles && !scanKnownJunk))
+                    .disabled(isScanning || (!scanAppCache && !scanTempFiles && !scanKnownJunk && !scanWaSent))
                 }
 
                 // ── Results ──
@@ -146,6 +175,9 @@ struct CleanupView: View {
             if scanKnownJunk {
                 found += scanKnownJunkFiles()
             }
+            if scanWaSent {
+                found += scanWaSentMedia()
+            }
 
             found.sort { $0.size > $1.size }
 
@@ -196,6 +228,70 @@ struct CleanupView: View {
                         }
                     }
                 }
+            }
+        }
+
+        return items
+    }
+
+    private func scanWaSentMedia() -> [CleanupItem] {
+        var items: [CleanupItem] = []
+        let fm = FileManager.default
+        let calendar = Calendar.current
+        let cutoffDate = waAgeDays == Int.max
+            ? Date.distantFuture
+            : calendar.date(byAdding: .day, value: -waAgeDays, to: Date())!
+
+        // On iOS we can only scan user-accessible directories (Documents, Downloads)
+        // where WhatsApp media may have been exported/saved
+        let searchDirs: [URL] = [
+            fm.urls(for: .documentDirectory, in: .userDomainMask),
+            fm.urls(for: .downloadsDirectory, in: .userDomainMask),
+        ].flatMap { $0 }
+
+        for dir in searchDirs {
+            guard let enumerator = fm.enumerator(
+                at: dir,
+                includingPropertiesForKeys: [.fileSizeKey, .isDirectoryKey]
+            ) else { continue }
+
+            for case let fileURL as URL in enumerator {
+                let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isDirectoryKey])
+                guard values?.isDirectory == false,
+                      let size = values?.fileSize, size > 0 else { continue }
+
+                let name = fileURL.lastPathComponent
+                let nsName = name as NSString
+                let range = NSRange(location: 0, length: nsName.length)
+
+                guard let match = waDateRegex.firstMatch(in: name, range: range),
+                      match.numberOfRanges >= 4 else { continue }
+
+                guard let year = Int(nsName.substring(with: match.range(at: 1))),
+                      let month = Int(nsName.substring(with: match.range(at: 2))),
+                      let day = Int(nsName.substring(with: match.range(at: 3))) else { continue }
+
+                var comps = DateComponents()
+                comps.year = year; comps.month = month; comps.day = day
+                guard let fileDate = calendar.date(from: comps) else { continue }
+
+                let passesFilter = waAgeDays == Int.max || fileDate < cutoffDate
+                guard passesFilter else { continue }
+
+                let mediaType: String
+                let lower = name.lowercased()
+                if lower.hasPrefix("vid") { mediaType = "Vídeo" }
+                else if lower.hasPrefix("img") { mediaType = "Imagem" }
+                else if lower.hasPrefix("doc") { mediaType = "Documento" }
+                else if lower.hasPrefix("aud") || lower.hasPrefix("ptt") { mediaType = "Áudio" }
+                else { mediaType = "Mídia" }
+
+                let dateStr = String(format: "%04d-%02d-%02d", year, month, day)
+                items.append(CleanupItem(
+                    path: fileURL.path,
+                    category: "WA Sent \(mediaType) (\(dateStr))",
+                    size: Int64(size)
+                ))
             }
         }
 

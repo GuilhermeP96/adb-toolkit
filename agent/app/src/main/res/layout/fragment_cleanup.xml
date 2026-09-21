@@ -84,6 +84,30 @@
                     android:layout_height="wrap_content"
                     android:text="@string/cleanup_duplicates" />
 
+                <!-- WhatsApp Sent Media -->
+                <CheckBox
+                    android:id="@+id/cbWaSent"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/cleanup_wa_sent" />
+
+                <TextView
+                    android:id="@+id/tvWaSentHint"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/cleanup_wa_sent_hint"
+                    android:textSize="12sp"
+                    android:textColor="?android:textColorSecondary"
+                    android:paddingStart="32dp"
+                    android:paddingBottom="4dp" />
+
+                <Spinner
+                    android:id="@+id/spinnerWaAge"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingStart="32dp"
+                    android:visibility="gone" />
+
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnScan"
                     android:layout_width="match_parent"

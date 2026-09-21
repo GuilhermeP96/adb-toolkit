@@ -24,6 +24,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -39,33 +40,36 @@ log = logging.getLogger("adb_toolkit.cleanup")
 # ---------------------------------------------------------------------------
 
 class CleanupMode(str, Enum):
-    APP_CACHE   = "app_cache"
-    JUNK_DIRS   = "junk_dirs"
-    JUNK_FILES  = "junk_files"
-    KNOWN_JUNK  = "known_junk"
-    ORPHANS     = "orphans"
-    DUPLICATES  = "duplicates"
+    APP_CACHE     = "app_cache"
+    JUNK_DIRS     = "junk_dirs"
+    JUNK_FILES    = "junk_files"
+    KNOWN_JUNK    = "known_junk"
+    ORPHANS       = "orphans"
+    DUPLICATES    = "duplicates"
+    WA_SENT_MEDIA = "wa_sent_media"
 
 
 MODE_LABELS: Dict[CleanupMode, str] = {
-    CleanupMode.APP_CACHE:  "Cache de Aplicativos",
-    CleanupMode.JUNK_DIRS:  "Diretórios de Lixo",
-    CleanupMode.JUNK_FILES: "Arquivos Avulsos",
-    CleanupMode.KNOWN_JUNK: "Locais Conhecidos",
-    CleanupMode.ORPHANS:    "Órfãos de Apps",
-    CleanupMode.DUPLICATES: "Arquivos Duplicados",
+    CleanupMode.APP_CACHE:     "Cache de Aplicativos",
+    CleanupMode.JUNK_DIRS:     "Diretórios de Lixo",
+    CleanupMode.JUNK_FILES:    "Arquivos Avulsos",
+    CleanupMode.KNOWN_JUNK:    "Locais Conhecidos",
+    CleanupMode.ORPHANS:       "Órfãos de Apps",
+    CleanupMode.DUPLICATES:    "Arquivos Duplicados",
+    CleanupMode.WA_SENT_MEDIA: "WhatsApp Sent Media",
 }
 
 MODE_DESCRIPTIONS: Dict[CleanupMode, str] = {
-    CleanupMode.APP_CACHE:  "Cache, code_cache e pm trim-caches de todos os apps",
-    CleanupMode.JUNK_DIRS:  "Diretórios cache/preload/dump/log/thumbnails no armazenamento",
-    CleanupMode.JUNK_FILES: "Arquivos .log, .tmp, .dmp, thumbs.db, etc.",
-    CleanupMode.KNOWN_JUNK: "LOST.DIR, tombstones, ANR traces, bugreports, etc.",
-    CleanupMode.ORPHANS:    "Pastas de apps desinstalados em Android/data, obb, media",
-    CleanupMode.DUPLICATES: "Arquivos duplicados por hash (recomendado após demais limpezas)",
+    CleanupMode.APP_CACHE:     "Cache, code_cache e pm trim-caches de todos os apps",
+    CleanupMode.JUNK_DIRS:     "Diretórios cache/preload/dump/log/thumbnails no armazenamento",
+    CleanupMode.JUNK_FILES:    "Arquivos .log, .tmp, .dmp, thumbs.db, etc.",
+    CleanupMode.KNOWN_JUNK:    "LOST.DIR, tombstones, ANR traces, bugreports, etc.",
+    CleanupMode.ORPHANS:       "Pastas de apps desinstalados em Android/data, obb, media",
+    CleanupMode.DUPLICATES:    "Arquivos duplicados por hash (recomendado após demais limpezas)",
+    CleanupMode.WA_SENT_MEDIA: "Vídeos/imagens/docs enviados pelo WhatsApp (por idade)",
 }
 
-# Execution order (duplicates last)
+# Execution order (duplicates last, then wa_sent)
 MODE_ORDER: List[CleanupMode] = [
     CleanupMode.APP_CACHE,
     CleanupMode.JUNK_DIRS,
@@ -73,6 +77,7 @@ MODE_ORDER: List[CleanupMode] = [
     CleanupMode.KNOWN_JUNK,
     CleanupMode.ORPHANS,
     CleanupMode.DUPLICATES,
+    CleanupMode.WA_SENT_MEDIA,
 ]
 
 # Scan roots
@@ -112,6 +117,21 @@ _DUPLICATE_SCAN_ROOTS = [
     "/storage/emulated/0/DCIM", "/storage/emulated/0/Pictures",
     "/storage/emulated/0/Download", "/storage/emulated/0/Documents",
 ]
+
+# WhatsApp media Sent/ paths (Android 11+ scoped storage and legacy)
+_WA_SENT_ROOTS = [
+    "/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/Sent",
+    "/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/Sent",
+    "/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents/Sent",
+    "/sdcard/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Audio/Sent",
+    "/sdcard/Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Video/Sent",
+    "/sdcard/Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Images/Sent",
+    "/sdcard/WhatsApp/Media/WhatsApp Video/Sent",
+    "/sdcard/WhatsApp/Media/WhatsApp Images/Sent",
+]
+
+# Regex to extract real date from WhatsApp filenames (VID-20240711-WA0001.mp4)
+_WA_DATE_RE = re.compile(r"(?:VID|IMG|AUD|DOC|STK|PTT)-?(\d{4})(\d{2})(\d{2})-WA")
 
 _MIN_PACKAGES_THRESHOLD = 15
 _CANARY_PACKAGES = frozenset({
@@ -180,8 +200,9 @@ ProgressCb = Callable[[ModeProgress], None]
 class CleanupManager:
     """Manages device cleanup with independent per-mode estimate & execute."""
 
-    def __init__(self, adb: ADBCore):
+    def __init__(self, adb: ADBCore, wa_sent_min_age_days: int = 365):
         self.adb = adb
+        self.wa_sent_min_age_days = wa_sent_min_age_days
         self._cancel_flag = threading.Event()
         self._progress_cbs: Dict[CleanupMode, ProgressCb] = {}
 
@@ -241,12 +262,13 @@ class CleanupManager:
 
     def _estimate_mode(self, serial: str, mode: CleanupMode) -> ModeEstimate:
         dispatch = {
-            CleanupMode.APP_CACHE:  self._scan_app_cache,
-            CleanupMode.JUNK_DIRS:  self._scan_junk_dirs,
-            CleanupMode.JUNK_FILES: self._scan_junk_files,
-            CleanupMode.KNOWN_JUNK: self._scan_known_junk,
-            CleanupMode.ORPHANS:    self._scan_orphans,
-            CleanupMode.DUPLICATES: self._scan_duplicates,
+            CleanupMode.APP_CACHE:     self._scan_app_cache,
+            CleanupMode.JUNK_DIRS:     self._scan_junk_dirs,
+            CleanupMode.JUNK_FILES:    self._scan_junk_files,
+            CleanupMode.KNOWN_JUNK:    self._scan_known_junk,
+            CleanupMode.ORPHANS:       self._scan_orphans,
+            CleanupMode.DUPLICATES:    self._scan_duplicates,
+            CleanupMode.WA_SENT_MEDIA: self._scan_wa_sent_media,
         }
         fn = dispatch[mode]
         self._emit(mode, ModeProgress(mode=mode, phase="scanning", message="Escaneando…", percent=0))
@@ -288,12 +310,13 @@ class CleanupManager:
 
     def _execute_mode(self, serial: str, est: ModeEstimate) -> ModeResult:
         dispatch = {
-            CleanupMode.APP_CACHE:  self._clean_app_cache,
-            CleanupMode.JUNK_DIRS:  self._clean_dirs,
-            CleanupMode.JUNK_FILES: self._clean_files,
-            CleanupMode.KNOWN_JUNK: self._clean_dirs,
-            CleanupMode.ORPHANS:    self._clean_dirs,
-            CleanupMode.DUPLICATES: self._clean_files,
+            CleanupMode.APP_CACHE:     self._clean_app_cache,
+            CleanupMode.JUNK_DIRS:     self._clean_dirs,
+            CleanupMode.JUNK_FILES:    self._clean_files,
+            CleanupMode.KNOWN_JUNK:    self._clean_dirs,
+            CleanupMode.ORPHANS:       self._clean_dirs,
+            CleanupMode.DUPLICATES:    self._clean_files,
+            CleanupMode.WA_SENT_MEDIA: self._clean_files,
         }
         fn = dispatch[est.mode]
         return fn(serial, est)
@@ -646,6 +669,95 @@ class CleanupManager:
                     item_type="file",
                     detail=f"Duplicata de {group[0][0]}",
                     group=md5,
+                ))
+
+        return est
+
+    def _scan_wa_sent_media(self, serial: str) -> ModeEstimate:
+        """Scan WhatsApp Sent/ folders for media older than wa_sent_min_age_days."""
+        est = ModeEstimate(mode=CleanupMode.WA_SENT_MEDIA)
+        mode = CleanupMode.WA_SENT_MEDIA
+        cutoff = datetime.now() - timedelta(days=self.wa_sent_min_age_days)
+
+        self._emit(mode, ModeProgress(
+            mode=mode, phase="scanning",
+            message=f"Escaneando WhatsApp Sent (>{self.wa_sent_min_age_days} dias)…",
+            percent=5,
+        ))
+
+        # Find which roots actually exist on device
+        existing_roots: List[str] = []
+        for root in _WA_SENT_ROOTS:
+            out = self.adb.run_shell(
+                f"[ -d '{root}' ] && echo Y || echo N", serial, timeout=5,
+            )
+            if out.strip().startswith("Y"):
+                existing_roots.append(root)
+
+        if not existing_roots:
+            return est
+
+        # List all files with stat (name|size)
+        all_files: List[tuple] = []  # (path, basename, size)
+        for idx, root in enumerate(existing_roots):
+            if self._cancel_flag.is_set():
+                break
+            self._emit(mode, ModeProgress(
+                mode=mode, phase="scanning",
+                message=f"Indexando {root.split('/')[-2]}/Sent…",
+                percent=10 + 60 * idx / max(len(existing_roots), 1),
+            ))
+            cmd = (
+                f"find '{root}' -type f -not -name '.nomedia' 2>/dev/null"
+                f" | xargs stat -c '%n|%s' 2>/dev/null"
+            )
+            out = self.adb.run_shell(cmd, serial, timeout=180)
+            for line in out.splitlines():
+                line = line.strip()
+                if "|" not in line:
+                    continue
+                parts = line.rsplit("|", 1)
+                if len(parts) != 2:
+                    continue
+                try:
+                    sz = int(parts[1])
+                except ValueError:
+                    continue
+                fpath = parts[0]
+                basename = fpath.rsplit("/", 1)[-1]
+                all_files.append((fpath, basename, sz))
+
+        self._emit(mode, ModeProgress(
+            mode=mode, phase="scanning",
+            message=f"Filtrando {len(all_files)} arquivos por data…",
+            percent=75,
+        ))
+
+        # Filter by filename date
+        for fpath, basename, sz in all_files:
+            m = _WA_DATE_RE.search(basename)
+            if not m:
+                continue  # Can't determine date — skip (safe default)
+            try:
+                file_date = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                continue
+            if file_date < cutoff:
+                # Determine media type from path
+                media_type = "Mídia"
+                lower = fpath.lower()
+                if "video" in lower:
+                    media_type = "Vídeo"
+                elif "image" in lower:
+                    media_type = "Imagem"
+                elif "document" in lower:
+                    media_type = "Documento"
+                elif "audio" in lower:
+                    media_type = "Áudio"
+
+                est.items.append(CleanupItem(
+                    path=fpath, size_bytes=sz, item_type="file",
+                    detail=f"WA Sent {media_type}: {basename} ({file_date:%Y-%m-%d})",
                 ))
 
         return est

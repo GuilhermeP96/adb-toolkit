@@ -5,6 +5,7 @@ import android.os.Environment
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.Toast
 import androidx.fragment.app.Fragment
@@ -18,11 +19,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
+import java.util.regex.Pattern
 
 /**
  * Cleanup screen — scans for junk files, caches and orphan data.
  * Modes mirror the desktop cleanup_manager.py:
- *   app_cache | junk_dirs | junk_files | known_junk | orphans | duplicates
+ *   app_cache | junk_dirs | junk_files | known_junk | orphans | duplicates | wa_sent_media
  */
 class CleanupFragment : Fragment() {
 
@@ -30,6 +35,20 @@ class CleanupFragment : Fragment() {
     private val binding get() = _binding!!
     private val adapter = CleanupAdapter()
     private val results = mutableListOf<CleanupItem>()
+
+    // WhatsApp filename date pattern: VID-20240711-WA0001.mp4
+    private val waDatePattern = Pattern.compile("(?:VID|IMG|AUD|DOC|STK|PTT)-?(\\d{4})(\\d{2})(\\d{2})-WA")
+
+    // WhatsApp Sent age options (days)
+    private val waAgeOptions = listOf(
+        90 to "Sent > 90 dias",
+        180 to "Sent > 6 meses",
+        365 to "Sent > 1 ano",
+        730 to "Sent > 2 anos",
+        1095 to "Sent > 3 anos",
+        Int.MAX_VALUE to "Toda pasta Sent"
+    )
+    private var selectedWaAgeDays = 365
 
     data class CleanupItem(
         val path: String,
@@ -60,6 +79,22 @@ class CleanupFragment : Fragment() {
         binding.rvResults.layoutManager = LinearLayoutManager(requireContext())
         binding.rvResults.adapter = adapter
 
+        // WhatsApp Sent age spinner
+        val ageLabels = waAgeOptions.map { it.second }
+        binding.spinnerWaAge.adapter = ArrayAdapter(
+            requireContext(), android.R.layout.simple_spinner_dropdown_item, ageLabels
+        )
+        binding.spinnerWaAge.setSelection(2) // default: > 1 ano
+        binding.spinnerWaAge.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: android.widget.AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                selectedWaAgeDays = waAgeOptions[pos].first
+            }
+            override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+        }
+        binding.cbWaSent.setOnCheckedChangeListener { _, checked ->
+            binding.spinnerWaAge.visibility = if (checked) View.VISIBLE else View.GONE
+        }
+
         binding.btnScan.setOnClickListener { performScan() }
         binding.btnSelectAll.setOnClickListener { toggleSelectAll() }
         binding.btnClean.setOnClickListener { performClean() }
@@ -82,6 +117,7 @@ class CleanupFragment : Fragment() {
             if (binding.cbKnownJunk.isChecked) add("known_junk")
             if (binding.cbOrphans.isChecked)   add("orphans")
             if (binding.cbDuplicates.isChecked) add("duplicates")
+            if (binding.cbWaSent.isChecked)    add("wa_sent_media")
         }
 
         if (modes.isEmpty()) {
@@ -195,6 +231,50 @@ class CleanupFragment : Fragment() {
                     // Keep the first, mark the rest
                     dups.drop(1).forEach { f ->
                         items.add(CleanupItem(f.absolutePath, "Duplicata de ${dups.first().parent}", f.length()))
+                    }
+                }
+            }
+        }
+
+        if ("wa_sent_media" in modes) {
+            val waSentRoots = listOf(
+                File(root, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Video/Sent"),
+                File(root, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images/Sent"),
+                File(root, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents/Sent"),
+                File(root, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Audio/Sent"),
+                File(root, "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Video/Sent"),
+                File(root, "Android/media/com.whatsapp.w4b/WhatsApp Business/Media/WhatsApp Images/Sent"),
+            )
+            val cutoff = Calendar.getInstance().apply {
+                add(Calendar.DAY_OF_YEAR, -selectedWaAgeDays)
+            }
+            val dateFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
+            for (sentDir in waSentRoots) {
+                if (!sentDir.exists() || !sentDir.canRead()) continue
+                walkFiles(sentDir).forEach { f ->
+                    if (f.name == ".nomedia") return@forEach
+                    val matcher = waDatePattern.matcher(f.name)
+                    if (matcher.find()) {
+                        try {
+                            val year = matcher.group(1)!!.toInt()
+                            val month = matcher.group(2)!!.toInt()
+                            val day = matcher.group(3)!!.toInt()
+                            val fileDate = Calendar.getInstance().apply {
+                                set(year, month - 1, day, 0, 0, 0)
+                            }
+                            if (fileDate.before(cutoff)) {
+                                val mediaType = when {
+                                    sentDir.absolutePath.contains("Video", true) -> "Vídeo"
+                                    sentDir.absolutePath.contains("Image", true) -> "Imagem"
+                                    sentDir.absolutePath.contains("Document", true) -> "Documento"
+                                    sentDir.absolutePath.contains("Audio", true) -> "Áudio"
+                                    else -> "Mídia"
+                                }
+                                val dateStr = dateFmt.format(fileDate.time)
+                                items.add(CleanupItem(f.absolutePath, "WA Sent $mediaType ($dateStr)", f.length()))
+                            }
+                        } catch (_: Exception) {}
                     }
                 }
             }
