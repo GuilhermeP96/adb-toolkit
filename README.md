@@ -210,6 +210,47 @@ python main.py --install-drivers
 python main.py -v --list-devices
 ```
 
+### MCP para Codex / agentes de IA
+
+O projeto inclui um servidor MCP local, sem dependências adicionais, que expõe
+as APIs do Android Agent como ferramentas tipadas. Ele usa transporte `stdio` e
+funciona no Termux/PRoot.
+
+1. Inicie o serviço no aplicativo **ADB Toolkit Agent**.
+2. Copie o token mostrado nas configurações do Agent para um arquivo local:
+
+```bash
+mkdir -p ~/.config/adb-toolkit
+printf '%s' 'SEU_TOKEN' > ~/.config/adb-toolkit/agent-token
+chmod 600 ~/.config/adb-toolkit/agent-token
+```
+
+3. Registre o servidor no Codex:
+
+```bash
+codex mcp add adb-toolkit \
+  -- python /caminho/absoluto/adb-toolkit/src/mcp_server.py
+```
+
+O caminho padrão do token é `~/.config/adb-toolkit/agent-token`; não é
+necessário gravar o segredo na configuração do Codex. Para usar outro endereço
+do Agent, acrescente `--env ADB_TOOLKIT_AGENT_URL=http://IP:15555` antes de
+`-- python ...`.
+
+Variáveis aceitas:
+
+| Variável | Padrão | Uso |
+|----------|--------|-----|
+| `ADB_TOOLKIT_AGENT_URL` | `http://127.0.0.1:15555` | URL HTTP do Android Agent |
+| `ADB_TOOLKIT_AGENT_TOKEN` | vazio | Token diretamente no ambiente |
+| `ADB_TOOLKIT_AGENT_TOKEN_FILE` | `~/.config/adb-toolkit/agent-token` | Arquivo local contendo o token |
+| `ADB_TOOLKIT_AGENT_TIMEOUT` | `30` | Timeout HTTP em segundos |
+| `ADB_TOOLKIT_MCP_DEBUG` | `0` | Mostra tracebacks no stderr quando definido como `1` |
+
+O token nunca é retornado pelas ferramentas. Escrita, exclusão e execução de
+shell exigem `confirm=true`; exclusão também recusa os diretórios raiz do
+armazenamento. Consulte as ferramentas instaladas com `codex mcp get adb-toolkit`.
+
 ---
 
 ## 📁 Estrutura do Projeto
