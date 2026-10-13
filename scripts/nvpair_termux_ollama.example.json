@@ -1,0 +1,6 @@
+{
+  "engine": "ollama",
+  "runtime": {
+    "port": 11435
+  }
+}
